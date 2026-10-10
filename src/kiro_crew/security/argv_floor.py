@@ -95,7 +95,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.security.argv_floor_git import (  # noqa: F401
         _AMBIGUOUS_REFS,
         _AMBIGUOUS_REFSPEC_RE,
+        _BACKGROUND_BOUNDARY,
         _GIT_ARG_FLAGS,
+        _GIT_PRECOMMAND_WORDS,
+        _GIT_PROGRAM_LEAD_WORDS,
         _GIT_PUBLISH_DENY_LABEL,
         _GIT_PUBLISH_GLUE_RE,
         _GIT_PUBLISH_RE,
@@ -116,7 +119,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_push_to_protected_branch,
         _normalize_ref,
         _process_substitution_word_is_opaque,
+        _program_word_may_resolve_to_git,
         _push_segment_targets_protected,
+        _raw_git_subcommand,
+        _raw_program_word_end,
+        _raw_word_nesting,
+        _runs_runtime_program_publish,
+        _segment_runs_runtime_program_publish,
+        _split_background_boundaries,
+        _unescaped_backticks,
     )
     from kiro_crew.security.argv_floor_hosts import (  # noqa: F401
         _DNS_CANDIDATE_RE,
