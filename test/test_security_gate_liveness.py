@@ -521,7 +521,19 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 12, from 32,601, for the crewmate folder's state files in ``paths_lists``
 #: (owners, kits, revoked approvals, tool access, migration ledger), write-denied
 #: like the folder itself. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_613
+#:
+#: Raised again, from 32,613, for gh's body-from-file flags in ``exfil_bash``
+#: (`--input`, `--field k=@f`, `release --notes-file`): a shell-word reader for
+#: the command (quotes, newlines, comments and here-documents read as bash reads
+#: them), one matcher keyed to a plain `gh` command word, and its catalog row,
+#: kept out of the regex tier (the gate alone enforces it). No existing pattern
+#: or pass moved. Quote state comes from ``shell_normalizer._iter_shell_chars``.
+#: Ten more for that reader: a bare `<`/`>` ends the word before it, as in bash.
+#: Thirty-six more for gh's own flag parsing: a short-flag cluster (`-dt TITLE`)
+#: and `release download -p`, which takes a value there. Three more for the bash
+#: reserved words that may stand before the program (`{`, `then`, `do`, `!`).
+#: Two more: the facade's type-check names for that matcher's helpers.
+_PACKAGE_LINE_BUDGET = 32_919
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -157,6 +157,12 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
 
+# ``data-exfil-gh-file-body`` is enforced ONLY by ``exfil.audit_bash_exfiltration``,
+# which reads shell words. Its ``pattern`` is a readable subset for Settings and is
+# kept out of the regex tier, which reads raw lines and would refuse the same text
+# inside a quoted value or a here-document body.
+_GH_FILE_BODY_PATTERN: str = _RULES_BY_ID["data-exfil-gh-file-body"].pattern
+
 # The self-management SUBCOMMAND floors named in this set -- restart, update, file-delivery
 # approve, gateway restart, cloud <destructive>, skills authority-retire -- have NO catalog row
 # and NO opt-out.  A regex
