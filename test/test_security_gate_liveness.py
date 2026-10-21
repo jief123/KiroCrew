@@ -521,7 +521,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 12, from 32,601, for the crewmate folder's state files in ``paths_lists``
 #: (owners, kits, revoked approvals, tool access, migration ledger), write-denied
 #: like the folder itself. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_613
+#:
+#: Raised again, from 32,613, for the ``-c`` operand that skips a redirect word, and the
+#: rm floor reading each nested-shell payload through the shared extractor and the
+#: shared data-consumer exemption, with a heredoc body left as data, and the exemption
+#: voided when the raw text holds a splice marker, and a redirect glued to ``-c`` /
+#: ``-S`` read the same way. No pattern moved.
+_PACKAGE_LINE_BUDGET = 32_801
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
