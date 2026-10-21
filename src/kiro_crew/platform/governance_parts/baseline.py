@@ -83,6 +83,8 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     "capabilities.decisions": _CAPABILITY_OFF,
     "capabilities.decisions_local": _CAPABILITY_OFF,
+    # The session's agent and tools run in Kiro's cloud, outside this ceiling.
+    "capabilities.kiro_cloud_sessions": _CAPABILITY_OFF,
 }
 
 BASELINE_UNGATED: Dict[str, str] = {
