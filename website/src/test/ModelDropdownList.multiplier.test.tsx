@@ -8,7 +8,7 @@
  * no badge rather than fall back to 1x.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 
 // `/all` for the bn/de catalogs: `../i18n` registers English only, and an
 // unregistered language resolves to `en`, which renders Latin digits.
@@ -19,8 +19,9 @@ import { withAutoFirst } from '../providers/modelList'
 /** The badge for `name`, or null when that row rendered none. */
 function badgeFor(name: string): HTMLElement | null {
   const row = screen.getByText(name).closest('[role="option"]')!
-  // The visible glyph is aria-hidden; find it by the mono badge class it carries.
-  return row.querySelector('span.rounded-full')
+  // The badge is the row's one named image (role="img"); a row without a
+  // multiplier renders none.
+  return row.querySelector('[role="img"]')
 }
 
 describe('formatMultiplier — matches how kiro spells its own rates', () => {
@@ -161,15 +162,18 @@ describe('ModelDropdownList — badge rendering', () => {
     expect(badgeFor('claude-opus-5')!.className).toContain('bg-bg-elevated')
   })
 
-  it('explains the bare glyph to a screen reader', () => {
+  it('names the badge for a screen reader and explains it on hover', () => {
     render(<ModelDropdownList
       models={[{ name: 'claude-opus-5', rateMultiplier: 2.2 }]}
       activeModel="" onSelect={vi.fn()} />)
     const row = screen.getByRole('option')
-    // The option's accessible name is built from its contents, so the
-    // explanation has to be IN the tree, not on a title= attribute.
-    expect(row.textContent).toContain('2.2x the credit cost of Auto')
-    expect(row.querySelector('[aria-hidden="true"]')).toHaveTextContent('2.2x')
+    // The badge is a NAMED node in the tree (not a bare "2.2x" glyph), and the
+    // option's accessible name is built from its contents, so it carries the
+    // same sentence. The title gives the mouse the same explanation.
+    const badge = within(row).getByRole('img', { name: '2.2x the credit cost of Auto' })
+    expect(badge).toHaveTextContent('2.2x')
+    expect(badge).toHaveAttribute('title', '2.2x the credit cost of Auto')
+    expect(row).toHaveAccessibleName(/2\.2x the credit cost of Auto/)
   })
 
   it('renders Auto’s short label from the catalog, not the row', () => {
@@ -197,8 +201,8 @@ describe('ModelDropdownList — badge rendering', () => {
     render(<ModelDropdownList
       models={[{ name: 'auto', rateMultiplier: 1 }]} activeModel="" onSelect={vi.fn()} />)
     const row = screen.getByRole('option')
-    expect(row.textContent).toContain('1.0x, the baseline credit cost')
-    expect(row.textContent).not.toContain('the credit cost of Auto')
+    expect(within(row).getByRole('img')).toHaveAccessibleName('1.0x, the baseline credit cost')
+    expect(row).not.toHaveAccessibleName(/the credit cost of Auto/)
   })
 
   it('gives every badge the same width so the column is not ragged', () => {

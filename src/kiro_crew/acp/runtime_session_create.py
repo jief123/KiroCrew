@@ -51,6 +51,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import METHOD_SESSION_NEW, JsonRpcMessage
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.kas_model_catalog import sign_in_generation
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
@@ -396,6 +397,10 @@ async def create_session(
     start_t0 = time.monotonic()
     # Wall time the request went out, for the session-open mount check.
     request_sent_at = time.time()
+    # The Crew sign-in generation the request went out under, for the KAS
+    # catalog recorder: the response's ``model`` select is the account in the
+    # vault at this moment, and is refused if a sign-out or sign-in lands first.
+    request_generation = sign_in_generation()
     try:
         resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
         session_id = str(resp.get("sessionId") or "")
@@ -442,6 +447,7 @@ async def create_session(
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
             request_sent_at=request_sent_at,
+            request_generation=request_generation,
         )
         if collector is None:
             permit.release()
@@ -476,6 +482,7 @@ async def create_session(
         session_key=session_key,
         member_dispatch_mounted=member_mounted,
         request_sent_at=request_sent_at,
+        request_generation=request_generation,
     )
 
 
@@ -504,6 +511,7 @@ def _collect_late_start(
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
+    request_generation: int | None = None,
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -590,6 +598,7 @@ def _collect_late_start(
                 session_key=session_key,
                 member_dispatch_mounted=member_dispatch_mounted,
                 request_sent_at=request_sent_at,
+                request_generation=request_generation,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -653,6 +662,7 @@ async def _finish_create_session(
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
+    request_generation: int | None = None,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -702,6 +712,9 @@ async def _finish_create_session(
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
+    # The sign-in generation the request went out under, read by the KAS catalog
+    # recorder inside ``store_session_config``; see the handle's field.
+    handle.request_sign_in_generation = request_generation
     # Populate state from session/new response (configOptions, available models)
     handle.store_session_config(resp)
     # Both halves of that snapshot are now known, which is what makes the

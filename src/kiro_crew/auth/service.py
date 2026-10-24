@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -233,9 +234,16 @@ class KasLoginService:
         store: TokenStore,
         *,
         session: aiohttp.ClientSession | None = None,
+        on_identity_change: Callable[[], None] | None = None,
     ) -> None:
         self._store = store
         self._session = session
+        # Told, synchronously and under the pending lock, the moment the vault's
+        # identity changes: right after a credential is saved and right after a
+        # sign-out's deletes. The caller decides what that means (the dashboard
+        # hands in the KAS model catalog's forget), so this module never names a
+        # consumer; a hook that raises is logged, never propagated.
+        self._on_identity_change = on_identity_change
         self._pending: dict[str, _PendingKind] = {}
         # login_id -> the identity slot a re-authentication replaces once its own
         # credential lands (see _persist_and_finish). Kept beside, not inside, the
@@ -671,6 +679,15 @@ class KasLoginService:
             self._drop_records(login_id)
         return result
 
+    def _identity_changed(self) -> None:
+        """Run the identity-change hook; a hook failure is logged, never raised."""
+        if self._on_identity_change is None:
+            return
+        try:
+            self._on_identity_change()
+        except Exception:  # noqa: BLE001 - the credential write already landed
+            logger.warning("KAS identity-change hook failed", exc_info=True)
+
     async def _save_token(
         self, token: KasToken, *, begun_gen: str | None = None, replaces: str = ""
     ) -> dict[str, Any]:
@@ -712,6 +729,9 @@ class KasLoginService:
                     return
                 self._store.save(token)
                 saved = True
+                # No await between the write and the hook: nothing that reads the
+                # new credential can be observed before the change is announced.
+                self._identity_changed()
                 if not replaces:
                     return
                 for other in KNOWN_IDENTITIES:
@@ -725,6 +745,12 @@ class KasLoginService:
                     except TokenStoreError as err:
                         logger.warning("could not remove replaced KAS identity %s: %s", other, err)
                         failed = True
+                # The vault's answer changed AGAIN: until the deletes above landed,
+                # ``resolve`` still picked the outranking old slot, so a process
+                # that took its credential in that window holds the previous
+                # account. Announce the change a second time so whatever it
+                # reports is attributed to the account before this one.
+                self._identity_changed()
 
             self._store.with_signout_lock(_compare_save_replace)
             return saved, removed, failed
@@ -929,11 +955,17 @@ class KasLoginService:
                 # slip a write between them.
                 self._store.bump_signout_generation()
 
-            await asyncio.to_thread(self._store.with_signout_lock, _delete_all_and_bump)
-            # Nothing may resolve after a sign-out. A slot that survived is a
-            # failure to sign out, not a detail.
-            if await asyncio.to_thread(self._store.resolve) is not None:
-                raise TokenStoreError("a stored Kiro identity survived sign-out")
+            try:
+                await asyncio.to_thread(self._store.with_signout_lock, _delete_all_and_bump)
+                # Nothing may resolve after a sign-out. A slot that survived is a
+                # failure to sign out, not a detail.
+                if await asyncio.to_thread(self._store.resolve) is not None:
+                    raise TokenStoreError("a stored Kiro identity survived sign-out")
+            finally:
+                # Announced even when a later delete fails: the named slot may
+                # already be gone, so what ``resolve`` answers has changed whatever
+                # happened after, and the error still reaches the handler.
+                self._identity_changed()
 
     def _drop_records(self, login_id: str) -> _PendingKind | None:
         """Remove every per-login record (caller holds ``self._lock``); returns the entry.

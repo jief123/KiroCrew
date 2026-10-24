@@ -14,7 +14,8 @@ Instance fields written: ``_available_models``, ``_available_models_captured_at`
 ``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``model_pin_partial``,
 ``model_pin_refused``.
 
-Instance fields read: ``_runtime``, ``_session_id``, ``last_prompt_stats``.
+Instance fields read: ``_runtime``, ``_session_id``, ``last_prompt_stats``,
+``request_sign_in_generation``.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import effort_config_option_levels
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
+from kiro_crew.agent_sdk.kas_model_catalog import record_catalog
 from kiro_crew.platform.context import redact_log_via_context
 
 if TYPE_CHECKING:
@@ -616,6 +618,21 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         self._kas_auto_fallback = (
             pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
         )
+    # The same select is the KAS engine's CATALOG (its served models with their
+    # credit multipliers), kept for the bundle-route picker, which has no
+    # ``--list-models`` to read. A catalog, not this session's advertised list:
+    # ``_available_models`` below is untouched by it. Positive KAS gate inside;
+    # stamped with the sign-in generation read when this session's request went
+    # out, so a response that lands after an account switch is refused. Per
+    # request, not per process: the engine fetches its credential per call
+    # (``_kiro/auth/getAccessToken``), so a long-lived runtime answers for
+    # whoever is in the vault NOW, and a stamp taken at launch would refuse
+    # every recording after a same-account re-sign-in for the process's life.
+    record_catalog(
+        resp,
+        self._runtime.acp_backend,
+        generation=self.request_sign_in_generation,
+    )
     # Where this host's model list lives is asked in ONE place
     # (``session_models_envelope``): a host in
     # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` advertises no ``models`` object

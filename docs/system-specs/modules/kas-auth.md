@@ -438,7 +438,22 @@ engine instead ([aws-control.md](aws-control.md)).
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
-  outlives the logout.
+  outlives the logout. `KasLoginService` also runs its `on_identity_change`
+  hook -- the dashboard hands in `agent_sdk/kas_model_catalog.forget_catalog`
+  -- under its lock right after a sign-out's deletes and right after every
+  saved credential, with no await between the write and the hook: that
+  recording is what ONE account is served, and the bundle-route picker must not
+  offer it to the next account before that account's first session records its
+  own; the forget also moves the sign-in generation that every `session/new`
+  and `session/load` notes as it goes out, so a request sent under the previous
+  account whose answer lands after the switch is refused as well, while a
+  runtime that outlives a same-account re-sign-in records again on its next
+  session
+  ([model-selection.md](../common/model-selection.md)). The dashboard does the
+  same on its side: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
+  and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
+  model-list caches (`clearCachedModels`, a reset of `['available-models']`),
+  because that query is otherwise refetched only when a session spawns.
 - The dashboard surfaces that NAME the signed-in account read the vault, never
   `kiro-cli whoami`, whenever the vault is the harness's credential (the KAS bundle
   route whatever the vault holds, or the relay route with a usable Crew sign-in --

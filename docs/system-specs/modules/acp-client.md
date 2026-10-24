@@ -2888,7 +2888,10 @@ message, and no token or credential text is logged.
   `/api/sessions/usage` (polled every 30s by the credit pill). Both return the
   shared `kiro_prerequisite_required` 503 — the same degraded response their
   timeout branches already produce — so the client contract is unchanged and
-  only the subprocess is skipped. On `/api/models` the gate is not the only
+  only the subprocess is skipped. Neither gate runs on the KAS bundle route,
+  where no kiro-cli is spawned: `/api/models` dispatches to
+  `models_kas_bundle.api_models_kas_bundle` first (see "The model picker follows
+  the route" below), and `/api/sessions/usage` takes its vault-owned path. On `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
   classifies that output and answers the same `kiro_prerequisite_required`, so an
@@ -3734,6 +3737,40 @@ install the engine either -- a changed pin needs `kirocrew kas install`, which
 the printed or logged line names) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
+
+**The model picker follows the route.** `GET /api/models` dispatches on the
+positive two-fact test `models_kas_bundle.kas_bundle_route` (`acp_backend ==
+"kas"` AND `agent.kas_bundle`) BEFORE the kiro-cli path, so on this route it never
+calls `reject_if_kiro_unverified` and never spawns `--list-models`
+(`dashboard/handlers/models_kas_bundle.py`; the kiro-cli path below is unchanged
+for every other configuration, the relay route included). Measured on the bundled
+engine (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`), `session/new`
+carries no `models` object: the list is the `configOptions` `model` select, each
+option with `_meta.kiro.rateMultiplier` and no structured context window. The
+shared-runtime driver records that select as the engine's catalog, stamped with
+the sign-in generation the session's request went out under
+(`agent_sdk/kas_model_catalog.py`, [model-selection.md](../common/model-selection.md)),
+and the endpoint serves the recording: readiness is the bundle's (installed
+engine, else 503 `kas_bundle_not_installed`; Crew's vault holding a usable
+identity, else 503 `kas_bundle_sign_in_required` -- never kiro-cli's code, which
+renders a `kiro-cli login` remedy); a cold process answers `auto` alone with 200,
+not a degraded 503, because nothing failed and the dashboard refetches the list
+when a session spawns -- and "cold" includes a process whose Crew sign-in changed
+since the recording, since sign-out and sign-in both forget it
+(`kas_model_catalog.forget_catalog`, [kas-auth.md](kas-auth.md)) and the
+dashboard resets its own model-list caches at the same two moments (the handler
+re-checks the generation after its one await, the advertised-store persist, and
+answers cold rather than serve a snapshot from before a switch); a recorded select answers its rows with `rate_multiplier`
+where the option priced one and `context_window` only where
+`model_registry.model_window` knows the id (an operator declaration, an earlier
+kiro-cli catalog, the static registry) -- omitted otherwise, never invented. The
+rows feed the `acp` bucket and the prices through the kiro-cli catalog's own
+`refresh_kiro_catalog` admission. The kiro path's `_entitled_kiro_models` is NOT
+run on them: it exists because `--list-models` prints the same rows for every
+tier, while the select already lists what the signed-in account is served -- and
+it reads the newest live provider in the shared `acp` namespace, which after a
+hot switch of `agent.acp_backend` can be a retained kiro-cli session whose own
+list (`auto` alone, say) would hide models the bundle account has.
 
 **Setup and the install probe follow the route.** With `agent.kas_bundle` on, KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the installed engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) when it does not, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same reader, spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup once the engine is installed, which is what the switch's help text promises. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. **The spec `permissions` block follows the route too.** Crew's auto-approve list reaches KAS's policy engine as the spec's `permissions` block, and the one writer (`agent_materialization/auto_approve._write_derived_permissions`, gate `_spec_permissions_accepted`) writes it only when every program that may read the spec accepts it. With the switch off that is the installed kiro-cli alone (`kiro_cli.spec_permissions_supported(installed_kiro_cli_version())`, floor 2.23.0). With `agent.kas_bundle` on it is the installed engine bundle (`installed_bundle().version` through `kas_pin.engine_spec_permissions_supported`, floor `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned release the block was measured against; `test_kas_pin` keeps the floor at or below the pin so a stock install always passes)), and also kiro-cli whenever one is installed (`kiro_cli.kiro_cli_installed`: a `resolve_kiro_cli` stat, never a spawn; a lookup that raises counts as installed; the doctor row reads the same predicate): the switch changes only the kas backend, and kiro-cli reads the same `~/.kiro/agents` files for a native Kiro session, a member on kiro, or a hand-run `kiro-cli`, where a release below its floor refuses the whole spec. A kiro-cli-free host is never version-probed and gets the block from the engine alone. The gate fails closed the way kiro-cli's does: no engine installed, or an engine below the floor (one selected through `KIROCREW_KAS_VERSION`), is an unknown reader and the block is withheld (an inherited block is removed, as on the relay route). `kirocrew doctor`'s bundle branch (`_report_kas_bundle_spec_permissions`) prints the `auto-approve:` row from the same predicates — written when the engine accepts and no installed kiro-cli refuses, withheld with the floor and the remedy when the engine is below it, withheld without a second issue when nothing is installed, and withheld naming kiro-cli and its update when an installed kiro-cli is old or unprobeable. The switch is read on every spec write through the install probe's own reader (`agent_sdk.backend_install._kas_bundle_route`) and never cached by the writer; a config that cannot be loaded selects the relay gate.
 

@@ -648,6 +648,14 @@ class AcpSessionHandle:
         # State tracking (populated from session/new response via store_session_config)
         self._model: str = ""
         self.active_agent: str = ""
+        # The Crew sign-in generation read when THIS session's ``session/new`` or
+        # ``session/load`` went out (``kas_model_catalog.sign_in_generation``);
+        # ``None`` on a handle whose request was never stamped. The KAS catalog
+        # recorder accepts the response's ``model`` select only while that
+        # generation is still current: the engine answers for the account in
+        # the vault when it was asked, so a sign-out or sign-in in flight makes
+        # the answer the previous account's.
+        self.request_sign_in_generation: int | None = None
         # Model id kiro-cli RESOLVED the session to (from currentModelId in the
         # session/new|load response), kept separate from _model (the user-picked
         # alias) so it feeds ONLY the context-window backfill — never slot.model

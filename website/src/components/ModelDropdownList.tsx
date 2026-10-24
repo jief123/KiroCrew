@@ -93,6 +93,27 @@ export function formatMultiplier(value: number): string {
 }
 
 /**
+ * The sentence that explains a badge: "2.2x the credit cost of Auto".
+ *
+ * The visible glyph alone reads as a bare "2.2x" — a screen reader hears
+ * "2.2 times" with nothing it multiplies, and a sighted user has no
+ * explanation of the 'x' or the tier hue either. One catalog sentence serves
+ * both: it is the badge's accessible name (`role="img"` + `aria-label`, so the
+ * badge is a named node in the tree and the option's own name, built from its
+ * contents, carries it) and its hover title for the mouse. Auto gets its own
+ * phrasing — "1.0x the credit cost of Auto" on the Auto row compares it to
+ * itself.
+ */
+function explainMultiplier(name: string, value: number): string {
+  return i18nT(
+    name === 'auto'
+      ? 'components.modelDropdownList.credit_multiplier_baseline'
+      : 'components.modelDropdownList.credit_multiplier',
+    { value: formatMultiplier(value) },
+  )
+}
+
+/**
  * Cost tier, used ONLY to pick the badge's border colour.
  *
  * Thresholds are set against the real served spread (0.01x to 4.4x as of
@@ -168,20 +189,13 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                   popover's accent-subtle wash would otherwise show through and
                   muddy the border hue that carries the tier. */}
               {isPricedMultiplier(mult) && (
-                <span className={`ml-auto shrink-0 min-w-[2.9rem] text-center px-1.5 py-[3px] rounded-full border bg-bg-elevated font-mono font-semibold tabular-nums text-[10.5px] leading-none text-text ${TIER_BORDER[costTier(mult)]}`}>
-                  <span aria-hidden="true">{formatMultiplier(mult)}</span>
-                  {/* The visible glyph alone reads as a bare "2.2 times" to a
-                      screen reader. The option's accessible name is built from
-                      its contents, so the explanation goes in the tree as
-                      sr-only text rather than a title= tooltip. Auto gets its
-                      own phrasing — "1.0× the credit cost of Auto" on the Auto
-                      row compares it to itself. */}
-                  <span className="sr-only">{i18nT(
-                    m.name === 'auto'
-                      ? 'components.modelDropdownList.credit_multiplier_baseline'
-                      : 'components.modelDropdownList.credit_multiplier',
-                    { value: formatMultiplier(mult) },
-                  )}</span>
+                <span
+                  role="img"
+                  aria-label={explainMultiplier(m.name, mult)}
+                  title={explainMultiplier(m.name, mult)}
+                  className={`ml-auto shrink-0 min-w-[2.9rem] text-center px-1.5 py-[3px] rounded-full border bg-bg-elevated font-mono font-semibold tabular-nums text-[10.5px] leading-none text-text ${TIER_BORDER[costTier(mult)]}`}
+                >
+                  {formatMultiplier(mult)}
                 </span>
               )}
             </div>
