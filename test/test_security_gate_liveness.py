@@ -521,7 +521,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 12, from 32,601, for the crewmate folder's state files in ``paths_lists``
 #: (owners, kits, revoked approvals, tool access, migration ledger), write-denied
 #: like the folder itself. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_613
+#:
+#: Raised by 19, from 32,613, for the ``rm`` floor's own segment walk: reserved
+#: words (``then``, ``do``, ``!``, ``time`` …) keep command position, a quoted
+#: substitution may expand to nothing (in the program word or a target), and
+#: ``#`` / ``<<`` inside an unpaired ``${…}`` / ``$[…]`` open no comment or heredoc.
+#: Each command is read with and without that tracking. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 32_632
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
