@@ -114,7 +114,7 @@ _MOVE_DIGESTS: dict[str, str] = dict(row.split() for row in """
 
     kiro_crew.autonudge                                         57a726a2ffc0bbaa
 
-    kiro_crew.crew_log.projection                               3a824730d2b31874
+    kiro_crew.crew_log.projection                               3efe216b8e5587b5
 
     kiro_crew.cron                                              b6a4481b56885fac
 

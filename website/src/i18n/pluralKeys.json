@@ -294,5 +294,8 @@
   "pages.settings.chatPanel.follow_default_more",
   "pages.membersPage.goals_heartbeat_per_day",
   "appSdk.newMessagesDivider.new_messages",
-  "pages.chatPage.jump_to_new"
+  "pages.chatPage.jump_to_new",
+  "pages.contextBreakdown.list_count",
+  "pages.contextBreakdown.media_documents",
+  "pages.contextBreakdown.media_images"
 ]

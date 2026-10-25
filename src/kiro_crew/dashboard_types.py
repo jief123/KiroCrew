@@ -108,6 +108,15 @@ _PROBE_SLOT: Final[str] = "catalog-probe"
 #: _a_real_path`` fails on a path the probe does not reach, and the companion test fails
 #: on a null leaf with no entry -- so the two directions are both pinned and neither a
 #: removed field nor an added one passes quietly.
+#: Crew's five running sums, in characters, as the usage fold's context part names them.
+_CREW_SUMS: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        name: {"type": "number", "integer": True}
+        for name in ("message", "memory", "rules", "skills", "other")
+    },
+}
+
 _NULLABLE: Final[dict[str, dict[str, Any]]] = {
     # ``_status_render``: three stamps, three reasons and the previous unit's id, all
     # null until the entry that carries them is folded.
@@ -140,6 +149,43 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
             "actor": {"type": "string"},
             "started_at": {"type": "number", "integer": True},
             "seq": {"type": "number", "integer": True},
+        },
+    },
+    # ``projection_usage_measured.context_render``: the newest turn and the newest
+    # session-start row, both null before the first composed turn. Crew's five sums are
+    # whole character counts; ``engine`` (the agent engine's own measurement, null when
+    # it measured nothing) and ``ttft_ms`` are the engine's to shape, so a key below
+    # them is not this catalog's to judge.
+    "usage.context.latest": {
+        "type": "object",
+        "properties": {
+            "turn": {"type": "number", "integer": True},
+            "phase": {"type": "string"},
+            "ours": _CREW_SUMS,
+            "loop_chars": {"type": "number", "integer": True},
+            "loop_estimated": {"type": "boolean"},
+            "engine": {
+                "type": "object",
+                "opaque": True,
+                "nullable": True,
+                "keyed_by": "a field of the engine's context/measured breakdown",
+            },
+            "ttft_ms": {
+                "type": "object",
+                "opaque": True,
+                "nullable": True,
+                "keyed_by": "a time-to-first-output part, in milliseconds",
+            },
+            "context_used": {"type": "number", "integer": True},
+            "context_window": {"type": "number", "integer": True},
+        },
+    },
+    "usage.context.start": {
+        "type": "object",
+        "properties": {
+            "turn": {"type": "number", "integer": True},
+            "ours": _CREW_SUMS,
+            "loop": {"type": "number", "integer": True},
         },
     },
     # ``_timeline_render``: the first and last seq of the window, null while it is empty.
@@ -191,8 +237,6 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
 #: to a fold cannot land as "has no keys".
 _OPAQUE: Final[dict[str, str]] = {
     "usage.by_model": "a model id",
-    "usage.context.by_source": "a context source name",
-    "usage.context.measured_unknown": "a category name the agent engine reported",
     "tools.by_name": "a tool name",
     "approvals.by_decision": "a decision value",
     "subagents.by_id": "a subagent id",

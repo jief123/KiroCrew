@@ -12,8 +12,12 @@ import { createElement } from 'react'
 import { notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const traceMock = vi.fn()
+const capsMock = vi.fn()
 vi.mock('../api/client', () => ({
-  api: { telemetryContextTrace: (slot: string) => traceMock(slot) },
+  api: {
+    telemetryContextTrace: (slot: string) => traceMock(slot),
+    chatSlotSelectionCapabilities: (slot: string) => capsMock(slot),
+  },
 }))
 
 import { ContextBreakdownTab, type ContextTrace } from '../pages/ContextBreakdownPanel'
@@ -50,6 +54,21 @@ function trace(turns: number): ContextTrace {
     peak_context_used: 0,
     context_window: 0,
     window_days: 14,
+    latest:
+      turns > 0
+        ? {
+            turn: turns,
+            phase: 'per_turn',
+            ours: { message: 10 * turns, memory: 0, rules: 0, skills: 0, other: 0 },
+            loop_chars: 0,
+            loop_estimated: true,
+            engine: null,
+            ttft_ms: null,
+            context_used: 0,
+            context_window: 0,
+          }
+        : null,
+    trend: [],
   }
 }
 
@@ -89,6 +108,8 @@ notifyManager.setScheduler(queueMicrotask)
 beforeEach(() => {
   vi.useFakeTimers()
   traceMock.mockReset()
+  capsMock.mockReset()
+  capsMock.mockResolvedValue({ known: true, backend: 'kas' })
   resetContextTraceRefresh()
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
 })
@@ -217,6 +238,31 @@ describe('Context tab: pushed frames replace the poll', () => {
     expect(onUsageFrame(qc, frame(1))).toBe('requested')
     await window()
     expect(traceMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('names the harness the selection-capabilities route reports, Kiro CLI included', async () => {
+    const unsplit = (): ContextTrace => {
+      const t = trace(1)
+      return { ...t, latest: { ...t.latest!, engine: null, loop_estimated: true, context_used: 9_000, context_window: 1_000_000 } }
+    }
+    traceMock.mockResolvedValue(unsplit())
+    mount()
+    await settle()
+    expect(capsMock).toHaveBeenCalledWith(SLOT)
+    // Kiro Agent: the turn is not split yet, never "switch to Kiro Agent".
+    const kasGlyph = screen.getByRole('button', { name: /more information/i })
+    await act(async () => { kasGlyph.focus(); kasGlyph.dispatchEvent(new FocusEvent('focus')) })
+    expect(document.body.textContent).toMatch(/Not measured for this turn yet\./)
+    expect(document.body.textContent).not.toMatch(/pick Kiro Agent/)
+    cleanup()
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    // Kiro CLI's runtime id is the empty string.
+    capsMock.mockResolvedValue({ known: true, backend: '' })
+    mount()
+    await settle()
+    const glyph = screen.getByRole('button', { name: /more information/i })
+    await act(async () => { glyph.focus(); glyph.dispatchEvent(new FocusEvent('focus')) })
+    expect(document.body.textContent).toMatch(/Kiro CLI doesn't report/)
   })
 
   it('re-reads on every mount, even over a cached trace', async () => {

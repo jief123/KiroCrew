@@ -101,6 +101,38 @@ _DRIVERS: dict[str, list[tuple[str, dict[str, Any]]]] = {
         ("message/sent", {"turn": 1, "step": 1, "text": "an answer"}),
         ("turn/completed", {"turn": 1, "stop_reason": "end_turn"}),
     ],
+    # A session-start turn then an ordinary one, each closed with an occupancy reading,
+    # so ``context.latest`` and ``context.start`` both hold real values.
+    "usage": [
+        ("session/opened", {"session_id": "s-1"}),
+        (
+            "context/composed",
+            {
+                "turn": 1,
+                "phase": "session_start",
+                "chars": 900,
+                "sources": [{"kind": "lessons", "chars": 900}],
+            },
+        ),
+        ("turn/completed", {"turn": 1, "stop_reason": "end_turn"}),
+        (
+            "context/composed",
+            {
+                "turn": 2,
+                "phase": "per_turn",
+                "chars": 40,
+                "sources": [{"kind": "your_message", "chars": 40}],
+            },
+        ),
+        (
+            "turn/completed",
+            {
+                "turn": 2,
+                "stop_reason": "end_turn",
+                "context": {"used": 1_000, "window": 200_000},
+            },
+        ),
+    ],
     # A depth of 2 so the render holds a real int under ``depth`` and the declared
     # ``number``/``integer`` type can be checked against it.
     "otel_session_tree": [
@@ -383,7 +415,15 @@ class TestTheThreeStates:
                     assert node["type"] == "object", path
                     assert node.get("keyed_by"), f"{path} is opaque and names no key"
                     assert "properties" not in node, path
-        assert found == len(dt._OPAQUE), "an opaque declaration did not reach the shape"
+        # A nullable declaration may carry an opaque object of its own (the engine's
+        # measurement under ``usage.context.latest``), so those count too.
+        declared = sum(
+            1
+            for key, node in dt._NULLABLE.items()
+            for _path, inner in _nodes(node, key)
+            if inner.get("opaque") is True
+        )
+        assert found == len(dt._OPAQUE) + declared, "an opaque declaration did not reach the shape"
 
     def test_every_opaque_declaration_is_a_real_path(self) -> None:
         """The other direction: a stale entry naming a path no fold renders would sit

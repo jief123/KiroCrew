@@ -762,12 +762,13 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.usage_context import (  # noqa: F401
+        _CATEGORY_LABEL,
         _CONTEXT_CACHE,
         _CONTEXT_CACHE_KEY,
         _CONTEXT_CACHE_TS,
         _CONTEXT_CACHE_TTL,
         _CONTEXT_TOP_SESSIONS,
-        _engine_view,
+        _as_blocks,
         _row_iso,
         context_occupancy,
         context_trace,

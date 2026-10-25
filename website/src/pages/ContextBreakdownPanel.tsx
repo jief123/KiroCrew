@@ -1,14 +1,14 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { api } from '../api/client'
+import { ACP_BACKEND_KIRO, acpBackendName } from '../api/acpBackend'
 import { contextTraceKey } from '../hooks/useWebSocket'
 import ErrorNotice from '../components/ErrorNotice'
 import { fmtNumber } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { SubagentActivity } from '../types'
-import { EngineBreakdown, type EngineMeasurement, type EngineTtft } from './ContextEngineBreakdown'
+import { breakdownOf, Headline, MESSAGE_COLOR, TurnBreakdown, type CrewCategory, type LatestTurn } from './ContextEngineBreakdown'
 import { SessionBreakdownTree } from './SessionBreakdownTree'
 import { CATEGORY_FILL } from './contextSourceColors'
 
@@ -34,11 +34,13 @@ export interface ContextTurn {
   /** Whether this row is the session's real start rather than a later rebuild, as the
    *  backend fold marked it. Absent on a gateway older than the field. */
   first_start?: boolean
-  /** What the agent engine measured of this turn; null when it measured nothing.
-   *  Absent on a gateway older than the field. */
-  engine?: EngineMeasurement | null
-  /** The turn's wait for its first output; null when not measured. */
-  ttft_ms?: EngineTtft | null
+}
+
+/** One turn of the trend ring: this app's five sums and the rest of the context. */
+export interface TrendRow {
+  turn: number
+  ours: Record<CrewCategory, number>
+  loop: number
 }
 
 export interface ContextTrace {
@@ -59,6 +61,17 @@ export interface ContextTrace {
   env_file?: string
   /** Engine categories this version does not know, by name. */
   engine_unknown?: Record<string, { chars: number; turns: number }>
+  /** The newest turn's one breakdown; null before any turn. Absent on an older gateway. */
+  latest?: LatestTurn | null
+  /** The newest 30 turns, oldest first. */
+  trend?: TrendRow[]
+  /** The newest session-start turn, listed above the chart. */
+  start?: TrendRow | null
+  /** Turns before the first trend row. */
+  earlier?: number
+  turn_count?: number
+  /** The characters-per-token ratio the fold's estimate used. */
+  chars_per_token?: number | null
 }
 
 /** The user's own text, and the labels the backend groups under one bucket. */
@@ -115,26 +128,6 @@ export function categorise(blocks: Record<string, number>): Record<Category, num
 /** The newest turns the chart draws; older ones are summarised as a count. */
 export const MAX_CHART_TURNS = 30
 
-// Stable label -> catalog-key map. Anything absent is humanised from its id at
-// render time (dynamic, so it needs no catalog entry — the long tail of rare
-// blocks never earns a translated string).
-const BLOCK_KEY: Record<string, string> = {
-  your_message: 'pages.contextBreakdown.block_your_message',
-  memory: 'pages.contextBreakdown.block_memory',
-  agent_instructions: 'pages.contextBreakdown.block_agent_instructions',
-  lessons: 'pages.contextBreakdown.block_lessons',
-  semantic_memory: 'pages.contextBreakdown.block_semantic_memory',
-  episodic_memory: 'pages.contextBreakdown.block_episodic_memory',
-  task_facts: 'pages.contextBreakdown.block_task_facts',
-  skill_index: 'pages.contextBreakdown.block_skill_index',
-  skill_hint: 'pages.contextBreakdown.block_skill_hint',
-  loaded_skill: 'pages.contextBreakdown.block_loaded_skill',
-  critical_rules: 'pages.contextBreakdown.block_critical_rules',
-  response_preferences: 'pages.contextBreakdown.block_response_preferences',
-  [EVERY_TURN_KEY]: 'pages.contextBreakdown.block_every_turn',
-  unclassified: 'pages.contextBreakdown.block_unclassified',
-}
-
 const CATEGORY_KEY: Record<Category, string> = {
   message: 'pages.contextBreakdown.cat_message',
   memory: 'pages.contextBreakdown.cat_memory',
@@ -153,17 +146,6 @@ export function groupBlocks(blocks: Record<string, number>): Record<string, numb
   return out
 }
 
-/** Humanise a block id for the long tail: `hook_context` -> `Hook context`. */
-function humanise(label: string): string {
-  const spaced = label.replace(/_/g, ' ')
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
-}
-
-function displayName(label: string): string {
-  const key = BLOCK_KEY[label]
-  return key ? i18nT(key) : humanise(label)
-}
-
 const fmtN = (n: number): string => fmtNumber(Math.round(n))
 
 /**
@@ -180,17 +162,6 @@ export function niceTicks(max: number): number[] {
   const ticks: number[] = []
   for (let v = 0; v < max + step; v += step) ticks.push(Math.round(v * 1e6) / 1e6)
   return ticks
-}
-
-/** Character delta between the selected turn and the one before it. */
-function deltaText(current: number, previous: number | undefined): string | null {
-  if (previous === undefined) return null
-  const diff = current - previous
-  if (diff === 0) return i18nT('pages.contextBreakdown.delta_same')
-  const n = fmtN(Math.abs(diff))
-  return diff > 0
-    ? i18nT('pages.contextBreakdown.delta_up', { n })
-    : i18nT('pages.contextBreakdown.delta_down', { n })
 }
 
 const CHART_HEIGHT = 260
@@ -214,7 +185,8 @@ interface ChartTurn {
    *  the window-local array. */
   displayN: number
   total: number
-  cats: Record<Category, number>
+  /** Band sizes by layer: the five categories and, on the trend chart, `loop`. */
+  cats: Record<string, number>
   isStart: boolean
   /** The session's real start, not a rebuild. */
   isFirstStart: boolean
@@ -254,6 +226,9 @@ function StackedArea({
   selectedDisplayN,
   onSelect,
   width: fixedWidth,
+  layers = CATEGORIES,
+  fills = CATEGORY_FILL,
+  interactive = true,
 }: {
   turns: ChartTurn[]
   selected: number
@@ -265,6 +240,11 @@ function StackedArea({
   onSelect: (n: number) => void
   /** Overrides the measured width (capture harnesses and tests). */
   width?: number
+  /** Bands bottom to top, and their fills. */
+  layers?: readonly string[]
+  fills?: Readonly<Record<string, string>>
+  /** False draws the picture only: no turn buttons. */
+  interactive?: boolean
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
@@ -301,8 +281,8 @@ function StackedArea({
     count === 1 ? [pick(turns[0]), pick(turns[0])] : turns.map(pick)
 
   let bottom = valuesOf(() => 0)
-  const layers = CATEGORIES.map(cat => {
-    const top = bottom.map((v, i) => v + valuesOf(t => t.cats[cat])[i])
+  const bands = layers.map(cat => {
+    const top = bottom.map((v, i) => v + valuesOf(t => t.cats[cat] ?? 0)[i])
     const topPts = top.map((v, i) => `${polyXs[i]},${y(v)}`)
     const bottomPts = bottom.map((v, i) => `${polyXs[i]},${y(v)}`).reverse()
     const layer = { cat, polygon: [...topPts, ...bottomPts].join(' '), line: topPts.join(' ') }
@@ -379,9 +359,9 @@ function StackedArea({
             </text>
           </g>
         ))}
-        {layers.map(layer => (
+        {bands.map(layer => (
           <g key={layer.cat} data-category={layer.cat}>
-            <polygon points={layer.polygon} fill={CATEGORY_FILL[layer.cat]} fillOpacity={0.83} />
+            <polygon points={layer.polygon} fill={fills[layer.cat]} fillOpacity={0.83} />
             <polyline points={layer.line} fill="none" stroke="var(--card)" strokeWidth={1} />
           </g>
         ))}
@@ -432,7 +412,7 @@ function StackedArea({
       </svg>
       {/* Transparent hit columns: one real button per turn so selection is
           clickable, focusable and arrow-key navigable. */}
-      <div className="absolute inset-y-0 left-0 right-0 cursor-pointer" role="group" aria-label={i18nT('pages.contextBreakdown.turn_picker')}>
+      {interactive ? <div className="absolute inset-y-0 left-0 right-0 cursor-pointer" role="group" aria-label={i18nT('pages.contextBreakdown.turn_picker')}>
         {pointerSurface ? (
           <button
             type="button"
@@ -463,73 +443,24 @@ function StackedArea({
             onKeyDown={e => onArrow(e, i)}
           />
         ))}
-      </div>
+      </div> : null}
     </div>
   )
 }
 
-/** A session-start turn, listed above the chart so its size does not pin the
- *  y-axis and flatten every later turn. Selectable like any chart turn. */
-function StartTurnRow({ turn, selected, onSelect }: { turn: ChartTurn; selected: boolean; onSelect: (n: number) => void }) {
+/** The newest session-start turn, listed above the chart so its one-off size does
+ *  not pin the y-axis. A row of facts: the panel shows the newest turn only. */
+function StartTurnRow({ row }: { row: TrendRow }) {
+  const total = Object.values(row.ours).reduce((a, b) => a + b, 0) + row.loop
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      data-turn={turn.n}
+    <div
       data-start-row
-      className={`w-full flex items-center justify-between gap-3 px-3 py-2 mb-2 rounded-lg border text-left text-[13px] cursor-pointer appearance-none bg-transparent focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${
-        selected ? 'border-[var(--accent)] text-text-strong bg-[var(--bg-accent)]' : 'border-border text-text hover:bg-[var(--card-hl)]'
-      }`}
-      onClick={() => onSelect(turn.n)}
+      className="w-full flex items-center justify-between gap-3 px-3 py-2 mb-2 rounded-lg border border-border text-left text-[13px] text-text"
     >
-      <span>
-        {/* Each row is a session-start COMPOSITION, and a unit emits one per start or
-            rebuild. Only the fold's first one is the session's beginning; a later one
-            is a rebuild, and labelling it "session start" reads as a session that
-            began there. */}
-        {turn.isFirstStart
-          ? i18nT('pages.contextBreakdown.start_row', { n: fmtN(turn.displayN) })
-          : i18nT('pages.contextBreakdown.rebuild_row', { n: fmtN(turn.displayN) })}
-      </span>
+      <span>{i18nT('pages.contextBreakdown.start_row', { n: fmtN(row.turn) })}</span>
       <span className="font-mono text-[12px] text-muted tabular-nums shrink-0">
-        {i18nT('pages.contextBreakdown.turn_button_chars', { chars: fmtN(turn.total) })}
+        {i18nT('pages.contextBreakdown.turn_button_chars', { chars: fmtN(total) })}
       </span>
-    </button>
-  )
-}
-
-/** One category of the selected turn: colour dot, name, count, and the raw
- *  blocks behind it as a disclosure. */
-function CategoryRow({ cat, chars, blocks }: { cat: Category; chars: number; blocks: Record<string, number> }) {
-  const [open, setOpen] = useState(false)
-  const name = i18nT(CATEGORY_KEY[cat])
-  const parts = Object.entries(groupBlocks(blocks)).sort((a, b) => b[1] - a[1])
-  const Chevron = open ? ChevronDown : ChevronRight
-  return (
-    <div className="border-b border-border last:border-b-0" data-category-row={cat}>
-      <button
-        type="button"
-        className="w-full flex items-center justify-between gap-3 py-2.5 text-left bg-transparent border-0 appearance-none cursor-pointer text-[13px] text-text hover:text-text-strong rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
-        aria-expanded={open}
-        onClick={() => setOpen(o => !o)}
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          <i className="w-2.5 h-2.5 rounded-[2px] shrink-0" style={{ background: CATEGORY_FILL[cat] }} aria-hidden="true" />
-          <span className="truncate">{name}</span>
-          <Chevron size={14} className="lucide-inline shrink-0 text-muted" aria-hidden="true" />
-        </span>
-        <span className="font-mono text-[12px] text-muted tabular-nums shrink-0">{fmtN(chars)}</span>
-      </button>
-      {open ? (
-        <ul className="list-none m-0 mb-2 ml-1 pl-4 border-l-2 border-border">
-          {parts.map(([label, n]) => (
-            <li key={label} className="flex items-center justify-between gap-3 py-1 text-[12px] text-text">
-              <span className="truncate">{displayName(label)}</span>
-              <span className="font-mono text-muted tabular-nums shrink-0">{fmtN(n)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
     </div>
   )
 }
@@ -541,9 +472,13 @@ export function ContextBreakdownPanel({
   trace,
   isLoading,
   chartWidth,
+  harness,
 }: {
   trace: ContextTrace | null | undefined
   isLoading?: boolean
+  /** The session's harness id ('kiro', 'kas', ...), as the selection-capabilities
+   *  route reports it; absent when unknown. */
+  harness?: string
   /** Fixed chart width in px (capture harnesses and tests); measured when absent. */
   chartWidth?: number
 }) {
@@ -554,11 +489,11 @@ export function ContextBreakdownPanel({
         {i18nT('pages.contextBreakdown.loading')}
       </div>
     )
-  } else if (!trace || trace.turns.length === 0) {
-    // Four roads lead here and only one is final. A session recorded before the fold,
-    // one with no completed turn yet, and one whose rows all fall outside the day
-    // window each fill on the next turn, so "yet" is true for them. With recording
-    // switched off nothing ever arrives, and the payload says so.
+  } else if (!trace || (!trace.latest && (trace.trend ?? []).length === 0)) {
+    // Three roads lead here and only one is final. A session recorded before the fold
+    // and one with no completed turn yet each fill on the next turn, so "yet" is true
+    // for them. With recording switched off nothing ever arrives, and the payload
+    // says so.
     body = (
       <div className="text-muted text-[11px] py-6 text-center" data-testid={trace?.recording === false ? 'context-breakdown-off' : undefined}>
         {trace?.recording === false
@@ -567,98 +502,50 @@ export function ContextBreakdownPanel({
       </div>
     )
   } else {
-    body = <ContextBreakdownCard trace={trace} chartWidth={chartWidth} />
+    body = <ContextBreakdownCard trace={trace} chartWidth={chartWidth} harness={harness} />
   }
 
   return <div>{body}</div>
 }
 
-function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; chartWidth?: number }) {
-  // `null` follows the newest turn as the trace grows; a number pins a turn the
-  // user chose, so a new row arriving does not yank the detail view away.
-  const [pinned, setPinned] = useState<number | null>(null)
+/** The trend chart's bands: this app's five categories, then the rest of the context. */
+const TREND_LAYERS: readonly string[] = [...CATEGORIES, 'loop']
+// The user's own words take the bar's chat colour, so the two pictures agree.
+const TREND_FILL: Readonly<Record<string, string>> = { ...CATEGORY_FILL, message: MESSAGE_COLOR, loop: 'var(--ctx-eng-loop)' }
 
-  const all: ChartTurn[] = trace.turns.map((turn, i) => ({
+const rowTotal = (row: TrendRow) => Object.values(row.ours).reduce((a, b) => a + b, 0) + row.loop
+
+function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTrace; chartWidth?: number; harness?: string }) {
+  const latest = trace.latest ?? null
+  const shown: ChartTurn[] = (trace.trend ?? []).map((row, i) => ({
     n: i + 1,
-    // The turn's TRUE ordinal, straight from the backend. NOT the array index plus a
-    // uniform omitted count: the array holds only the rows the fold kept AND this day
-    // view included, so an index-derived number would drift by every excluded row.
-    displayN: turn.ordinal || i + 1,
-    total: turn.total_chars,
-    cats: categorise(turn.blocks),
-    isStart: turn.phase === 'session_start',
-    // The fold's own mark, never the ordinal: a refused turn 1 puts the real start at
-    // ordinal 2. An older gateway sends no mark, and turn 1 is the best guess there.
-    isFirstStart: turn.first_start ?? (turn.ordinal || i + 1) === 1,
+    displayN: row.turn,
+    total: rowTotal(row),
+    cats: { ...row.ours, loop: row.loop },
+    isStart: false,
+    isFirstStart: false,
   }))
-  // One entry per TURN, not per row. A retried or recomposed turn writes one row per
-  // attempt and every attempt carries that turn's single ordinal, so listing rows would
-  // show "Turn N" twice and count it twice. Keep the newest attempt, the one the turn
-  // ended on, at the turn's first position. Session-start turns follow the same rule:
-  // a replay that regenerates a turn re-emits its session-start composition.
-  const startByTurn = new Map<number, ChartTurn>()
-  const byTurn = new Map<number, ChartTurn>()
-  for (const t of all) {
-    const map = t.isStart ? startByTurn : byTurn
-    // A recomposed turn keeps the newest attempt, but stays the session start if any
-    // of its rows was.
-    if (map.get(t.displayN)?.isFirstStart) t.isFirstStart = true
-    map.set(t.displayN, t)
-  }
-  // Session-start turns are listed above the chart: one of them is many times
-  // the size of any later turn and would pin the y-axis, flattening the rest.
-  const starts = [...startByTurn.values()]
-  const regular = [...byTurn.values()]
-  // The chart draws the newest MAX_CHART_TURNS regular turns; the rest are earlier.
-  const clipped = Math.max(0, regular.length - MAX_CHART_TURNS)
-  const shown = regular.slice(clipped)
-  // "Earlier turns not shown" = the regular turns before the first one the chart draws.
-  // Derived from that row's EXACT ordinal, so it counts every earlier turn -- those the
-  // backend dropped, those this day view excluded, and those this chart clipped -- and
-  // never a turn shown above as a session-start row. Exact and window-scoped, because
-  // the first shown row is chosen after the day-window filter.
+  const start = trace.start ?? null
   const firstShown = shown[0]
-  // `starts` holds one entry per turn, so this counts turn positions, not rows.
-  const startsBeforeFirstShown = firstShown
-    ? starts.filter(t => t.displayN < firstShown.displayN).length
-    : 0
-  const hidden = firstShown ? Math.max(0, firstShown.displayN - 1 - startsBeforeFirstShown) : 0
-  // Worded as the RANGE of earlier turns, not a count. A count reads as a set you could
-  // open, and the fold keeps no detail for most of these turns; a range also reconciles
-  // on sight with the first turn the chart draws, and naming the session-start rows
-  // explains why the range is wider than the turns it hides.
-  const lastEarlier = firstShown ? firstShown.displayN - 1 : 0
+  // The fold counts exactly how many turns precede the ring; the start row, when it
+  // is one of them, is listed above and named as such.
+  const lastEarlier = trace.earlier ?? 0
+  const startsBefore = start && firstShown && start.turn < firstShown.displayN ? 1 : 0
   const earlierText =
-    startsBeforeFirstShown > 0
-      ? i18nT('pages.contextBreakdown.earlier_range_starts', {
-          first: fmtN(1),
-          last: fmtN(lastEarlier),
-          count: startsBeforeFirstShown,
-        })
+    startsBefore > 0
+      ? i18nT('pages.contextBreakdown.earlier_range_starts', { first: fmtN(1), last: fmtN(lastEarlier), count: startsBefore })
       : lastEarlier === 1
         ? i18nT('pages.contextBreakdown.earlier_single', { n: fmtN(1) })
         : i18nT('pages.contextBreakdown.earlier_range', { first: fmtN(1), last: fmtN(lastEarlier) })
-  const newest = all.length
-  const selectable = new Set([...starts, ...shown].map(t => t.n))
-  const selected = pinned !== null && selectable.has(pinned) ? pinned : newest
-  const selectedTurn = trace.turns[selected - 1]
-  const selectedChart = all[selected - 1]
-  // The previous TURN, not the previous row: a retried turn's earlier attempts are not
-  // drawn, so comparing against one would label attempt-vs-attempt as turn-vs-turn.
-  const kept = new Set<ChartTurn>([...starts, ...regular])
-  const sequence = all.filter(t => kept.has(t))
-  const at = sequence.indexOf(selectedChart)
-  const previous = at > 0 ? sequence[at - 1].total : undefined
-  const delta = deltaText(selectedChart.total, previous)
-  const select = (n: number) => setPinned(n === newest ? null : n)
+  const newestN = shown.length
 
-  const engineSeen = trace.turns.some(t => t.engine || t.ttft_ms)
-
-  const rows = CATEGORIES.map(cat => ({
-    cat,
-    chars: selectedChart.cats[cat],
-    blocks: Object.fromEntries(Object.entries(selectedTurn.blocks).filter(([label]) => categoryOf(label) === cat)),
-  })).filter(r => r.chars > 0)
+  const breakdown = latest ? breakdownOf(
+        latest,
+        [],
+        trace.chars_per_token ?? 4,
+        harness ? acpBackendName({ id: harness }) : '',
+        harness ?? '',
+      ) : null
 
   return (
     <div className="border border-border bg-card rounded-xl overflow-hidden">
@@ -669,82 +556,63 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
         <p className="m-0 mt-1 text-[13px] text-muted">{i18nT('pages.contextBreakdown.subtitle')}</p>
       </div>
 
-      <div className="px-4 pt-4">
-        {starts.map(t => (
-          <StartTurnRow key={t.n} turn={t} selected={t.n === selected} onSelect={select} />
-        ))}
+      {latest && breakdown ? (
+        <div className="mx-4 mt-4" data-testid="selected-turn-detail">
+          <strong className="text-[15px] text-text-strong">
+            {i18nT('pages.contextBreakdown.turn_latest', { n: fmtN(latest.turn) })}
+          </strong>
+          <Headline breakdown={breakdown} />
+          <TurnBreakdown breakdown={breakdown} engine={latest.engine} ttft={latest.ttft_ms} charsPerToken={trace.chars_per_token} />
+        </div>
+      ) : null}
 
+      <div className="px-4 pt-4 mt-4 border-t border-border" data-testid="trend">
+        {start ? <StartTurnRow row={start} /> : null}
         {shown.length > 0 ? (
           <>
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-[13px] font-semibold text-text">
-                {hidden > 0
+                {lastEarlier > 0
                   ? i18nT('pages.contextBreakdown.scope_turns', { count: shown.length })
                   : i18nT('pages.contextBreakdown.scope_all_turns', { count: shown.length })}
               </span>
               <span className="text-[12px] text-muted">{i18nT('pages.contextBreakdown.scope_unit')}</span>
             </div>
-            {hidden > 0 ? (
+            {lastEarlier > startsBefore ? (
               <p className="m-0 mb-2 text-[12px] text-muted" data-testid="earlier-turns">
                 {earlierText}
               </p>
             ) : null}
-
             <StackedArea
               turns={shown}
-              selected={selected}
-              selectedDisplayN={selectedChart.displayN}
-              onSelect={select}
+              selected={newestN}
+              selectedDisplayN={shown[newestN - 1].displayN}
+              onSelect={() => {}}
               width={chartWidth}
+              layers={TREND_LAYERS}
+              fills={TREND_FILL}
+              interactive={false}
             />
-
             <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 text-[12px] text-muted">
-              {CATEGORIES.map(cat => (
-                <span key={cat} className="flex items-center gap-1.5">
-                  <i className="w-2.5 h-2.5 rounded-[2px] shrink-0" style={{ background: CATEGORY_FILL[cat] }} aria-hidden="true" />
-                  {i18nT(CATEGORY_KEY[cat])}
+              {TREND_LAYERS.filter(layer => shown.some(t => (t.cats[layer] ?? 0) > 0)).map(layer => (
+                <span key={layer} className="flex items-center gap-1.5">
+                  <i
+                    className="w-2.5 h-2.5 rounded-[2px] shrink-0"
+                    style={{ background: TREND_FILL[layer] }}
+                    aria-hidden="true"
+                  />
+                  {layer === 'loop'
+                    ? i18nT('pages.contextBreakdown.trend_rest')
+                    : i18nT(CATEGORY_KEY[layer as Category])}
                 </span>
               ))}
             </div>
-            <p className="m-0 mt-2 text-[12px] text-muted">{i18nT('pages.contextBreakdown.pick_hint')}</p>
-            <p className="m-0 mt-2 text-[12px] text-muted">
-              {i18nT('pages.contextBreakdown.chart_note')}
-              {starts.length > 0 ? <> {i18nT('pages.contextBreakdown.start_note')}</> : null}
-            </p>
+            <p className="m-0 mt-2 text-[12px] text-muted">{i18nT('pages.contextBreakdown.chart_note')}</p>
           </>
         ) : null}
       </div>
 
-      <div className="mx-4 mt-4 pt-4 border-t border-border" data-testid="selected-turn-detail">
-        <div className="flex items-center justify-between gap-3">
-          <strong className="text-[15px] text-text-strong">
-            {selected === newest
-              ? i18nT('pages.contextBreakdown.turn_latest', { n: fmtN(selectedChart.displayN) })
-              : i18nT('pages.contextBreakdown.turn_n', { n: fmtN(selectedChart.displayN) })}
-          </strong>
-          {delta ? <span className="text-[12px] text-muted">{delta}</span> : null}
-        </div>
-        <div className="mt-1 mb-3 text-[28px] font-semibold tracking-tight tabular-nums text-text-strong">
-          {fmtN(selectedChart.total)}
-          <span className="ml-1.5 text-[13px] font-normal tracking-normal text-muted">
-            {i18nT('pages.contextBreakdown.unit_chars')}
-          </span>
-        </div>
-        {rows.map(r => (
-          <CategoryRow key={r.cat} cat={r.cat} chars={r.chars} blocks={r.blocks} />
-        ))}
-        {/* Only once the engine has measured some turn of this trace: a backend that
-            never measures keeps the panel exactly as it was. */}
-        {engineSeen ? <EngineBreakdown
-            engine={selectedTurn.engine}
-            ttft={selectedTurn.ttft_ms}
-            unknownNames={Object.keys(trace.engine_unknown ?? {})}
-          /> : null}
-      </div>
-
-      <p className="m-0 mx-4 mt-4 mb-4 pt-3 border-t border-border text-[12px] text-muted">
-        {i18nT('pages.contextBreakdown.footer')}
-      </p>
+      <div className="h-4" aria-hidden="true" />
     </div>
   )
 }
@@ -769,6 +637,16 @@ export function ContextBreakdownTab({ slot, subagents }: { slot: string; subagen
     // reconnect re-reads once.
     refetchOnMount: 'always',
   })
+  // The session's harness, from the one route that resolves it (the model picker
+  // reads the same query): the live session's backend, else the slot's configured one.
+  const caps = useQuery({
+    queryKey: ['slot-selection-capabilities', slot],
+    queryFn: () => api.chatSlotSelectionCapabilities(slot),
+    enabled: !!slot && typeof api.chatSlotSelectionCapabilities === 'function',
+  })
+  const backend = caps.data?.backend
+  // Kiro CLI's runtime id is the empty string; the Agent Harness tab calls it `kiro`.
+  const harness = typeof backend === 'string' ? backend || ACP_BACKEND_KIRO : undefined
 
   return (
     <div className="h-full overflow-auto p-3">
@@ -776,7 +654,7 @@ export function ContextBreakdownTab({ slot, subagents }: { slot: string; subagen
       {/* A failed trace read otherwise rendered as an empty panel. Read-only
           side tab, so the hand-off loses nothing; the next pushed frame re-reads. */}
       <ErrorNotice message={error ? (error instanceof Error ? error.message : String(error)) : null} askAgent className="mb-3" />
-      <ContextBreakdownPanel trace={data} isLoading={isLoading} />
+      <ContextBreakdownPanel trace={data} isLoading={isLoading} harness={harness} />
     </div>
   )
 }

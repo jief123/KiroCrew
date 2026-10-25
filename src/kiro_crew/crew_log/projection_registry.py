@@ -263,21 +263,8 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
         source: dict(row) for source, row in state["credits_by_source"].items()
     }
     grown["by_model"] = {model: dict(row) for model, row in state["by_model"].items()}
-    grown["context_by_source"] = {
-        source: dict(row) for source, row in state["context_by_source"].items()
-    }
-    # Appended to, trimmed from the front, and a row is REPLACED when its turn's
-    # occupancy arrives -- so only the LIST is rebuilt. The row dicts are shared with
-    # the snapshot rather than copied, which is what keeps this O(window) instead of
-    # O(window x sources), and that sharing is exactly why the occupancy stamp in
-    # ``_usage_step`` assigns ``rows[index] = {**row, ...}`` instead of writing into a
-    # row: an in-place write would reach a projection already handed to a reader.
-    grown["context_turns"] = list(state["context_turns"])
     grown["omitted_models"] = list(state["omitted_models"])
-    # Its rows are REPLACED, never edited, so a shallow copy of the map is enough.
-    grown["context_measured_unknown"] = dict(state["context_measured_unknown"])
-    # ``context_turn_keys`` needs no copy: it is a str, which ``_count_turn_ordinal``
-    # REPLACES rather than mutates, so the snapshot keeps the value it was handed.
+    # ``ctx`` needs no copy: ``context_apply`` never edits it, it returns a new one.
     return grown
 
 
@@ -483,7 +470,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # Moved again for the engine-measured rows and the running sum of composed
         # characters beside them: a savepoint without the sum would subtract nothing
         # from the engine's user text for the rest of the unit.
-        state_version=_FOLD_STATE_VERSION_BASE + 12,
+        # Moved again for the fixed-size context part (five running sums, the newest
+        # measurement, a 30-row trend ring whose rows carry their own ordinal): a
+        # savepoint holding per-turn rows has none of it.
+        state_version=_FOLD_STATE_VERSION_BASE + 13,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.
