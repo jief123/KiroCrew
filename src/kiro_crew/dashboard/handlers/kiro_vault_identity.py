@@ -20,6 +20,12 @@ sign-in. It stores no e-mail and no portal URL, so a vault-labelled reading
 carries neither; the account modal then shows the provider badge and, for an
 enterprise profile, the profile's display name the usage API already attaches.
 
+The slot -> ``accountType`` table itself lives in :mod:`kiro_crew.auth.whoami`
+(:func:`~kiro_crew.auth.whoami.account_type_for`), the one copy every reader of
+the vault's identity spells from: this module, ``kirocrew kas whoami`` and the
+cloud sign-in's identity match. With no table of its own here, the dashboard
+cannot label an account one way while the remote sign-in matches it another.
+
 ``kiro_crew.auth`` is imported at call time only: it brings the ``cryptography``
 wheel, which must stay off the handlers package's import path (the boot-path
 and tool-approval gates named in :mod:`kiro_crew.acp.kas_host_auth`).
@@ -29,14 +35,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-
-#: The vault's store slot -> the ``accountType`` kiro-cli prints for that kind of
-#: sign-in. The social slot is spelled from its provider instead (below).
-_ACCOUNT_TYPE_BY_SLOT: Mapping[str, str] = {
-    "builder_id": "BuilderId",
-    "identity_center": "IamIdentityCenter",
-    "external_idp": "ExternalIdP",
-}
 
 
 def account_type_from_claims(identity: str, provider: str) -> str:
@@ -48,11 +46,14 @@ def account_type_from_claims(identity: str, provider: str) -> str:
     the account modal's badge humanizes whatever follows ``Social`` by splitting
     at an inner capital, so the one-capital spelling the vault stores is the one
     that renders as a single word. Every other slot has one type. ``""`` when
-    neither names a kind the dashboard can label.
+    neither names a kind the dashboard can label. The spelling is
+    :func:`kiro_crew.auth.whoami.account_type_for`'s, so the badge and
+    ``kirocrew kas whoami`` can never disagree about one token.
     """
-    if identity == "social":
-        return f"Social{provider}" if provider else ""
-    return _ACCOUNT_TYPE_BY_SLOT.get(identity, "")
+    # Deferred: see the module docstring.
+    from kiro_crew.auth.whoami import account_type_for
+
+    return account_type_for(identity, provider)
 
 
 def identity_fields(claims: Mapping[str, str]) -> dict[str, object]:

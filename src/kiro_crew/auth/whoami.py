@@ -39,6 +39,9 @@ START_URL_EXTRA_KEY = "start_url"
 #: The vault's store slot -> the ``accountType`` kiro-cli prints for that kind of
 #: sign-in. The social slot is spelled from its provider instead (below), as
 #: ``Social<Provider>`` -- the same family :func:`is_personal_account_type` accepts.
+#: THE one table: the dashboard's vault reading
+#: (``kiro_crew.dashboard.handlers.kiro_vault_identity``) spells from it too, so
+#: a slot added or respelled here reaches every reader at once.
 _ACCOUNT_TYPE_BY_SLOT: Mapping[str, str] = {
     "builder_id": "BuilderId",
     "identity_center": "IamIdentityCenter",

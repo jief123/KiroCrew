@@ -15,7 +15,8 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.auth.bridge import vault_identity_claims, vault_identity_fingerprint
-from kiro_crew.auth.store import KasToken, TokenStore
+from kiro_crew.auth.store import KNOWN_IDENTITIES, KasToken, TokenStore
+from kiro_crew.auth.whoami import whoami_document
 from kiro_crew.dashboard.handlers import kiro_vault_identity as kvi
 
 
@@ -74,6 +75,59 @@ class TestAccountTypeVocabulary:
             "account_type": "BuilderId"
         }
         assert kvi.identity_fields({}) == {}
+
+
+#: The provider classes the vault records beside each store slot. The social slot
+#: is tried once per provider it can hold and once provider-less.
+_PROVIDERS_BY_SLOT = {
+    "builder_id": ("BuilderId",),
+    "identity_center": ("Enterprise",),
+    "external_idp": ("ExternalIdp",),
+    "social": ("Google", "Github", ""),
+}
+#: Every store slot with every provider class above. Built from
+#: ``KNOWN_IDENTITIES`` so a slot added to the store fails here until it is listed.
+_EVERY_SLOT = tuple(
+    (identity, provider)
+    for identity in KNOWN_IDENTITIES
+    for provider in _PROVIDERS_BY_SLOT[identity]
+)
+
+
+class TestOneMappingWithWhoami:
+    """The dashboard and ``kirocrew kas whoami`` spell every slot from ONE table.
+
+    The account modal's badge (``identity_fields``) and the remote sign-in's
+    identity match (``whoami_document``) read the same vault; if their
+    ``accountType`` spellings ever differed, ``identity_matches_target`` would
+    refuse an organisation the dashboard labels correctly.
+    """
+
+    @pytest.mark.parametrize(("identity", "provider"), _EVERY_SLOT)
+    def test_every_slot_renders_the_same_account_type(self, identity, provider):
+        doc = whoami_document(_token(identity, provider=provider, profile_arn=None))
+        fields = kvi.identity_fields({"identity": identity, "provider": provider})
+        assert fields.get("account_type", "") == doc["accountType"]
+        if identity == "social" and not provider:
+            assert fields == {} and doc["accountType"] == ""
+        else:
+            assert fields["account_type"]
+
+    def test_the_dashboard_spells_from_the_auth_table_not_a_copy(self):
+        # Respell one slot in auth/whoami's table: the dashboard reading MUST follow,
+        # which it cannot if it keeps a table of its own that happens to agree today.
+        with patch.dict(
+            "kiro_crew.auth.whoami._ACCOUNT_TYPE_BY_SLOT", {"identity_center": "Respelled"}
+        ):
+            doc = whoami_document(
+                _token("identity_center", provider="Enterprise", profile_arn=None)
+            )
+            assert doc["accountType"] == "Respelled"
+            assert kvi.account_type_from_claims("identity_center", "Enterprise") == "Respelled"
+            assert kvi.identity_fields(
+                {"identity": "identity_center", "provider": "Enterprise"}
+            ) == {"account_type": "Respelled"}
+        assert not hasattr(kvi, "_ACCOUNT_TYPE_BY_SLOT"), "the handler grew a second table back"
 
 
 class TestVaultClaims:
