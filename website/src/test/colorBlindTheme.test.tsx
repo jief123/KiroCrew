@@ -156,6 +156,13 @@ describe('Color-blind safe theme', () => {
     expect(THEME_LABEL_KEY.colorblind).toBe('hooks.theme.color_blind_safe')
   })
 
+  it('gives the light user bubble a fill, since its --card is the page colour', () => {
+    expect(resolveVar('colorblind-light', '--card')).toBe(resolveVar('colorblind-light', '--bg'))
+    expect(ratio('colorblind-light', 'bg-hover', 'bg')).toBeGreaterThan(1.09)
+    const css = readFileSync(join(__dirname, '../styles/chat-transcript.css'), 'utf8')
+    expect(css).toMatch(/\[data-theme="colorblind-light"\] \.user-bubble\{background-color:var\(--bg-hover\)\}/)
+  })
+
   it('the distance floor fails a palette that is not colour-blind safe (control)', () => {
     // High Contrast pairs a pure green ok with a yellow warn: far apart for
     // typical vision, nearly one colour without M cones.
