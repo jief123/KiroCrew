@@ -65,6 +65,7 @@ from kiro_crew.slack.allowlist import (
     persist_allowed_user,
     persist_tracking_channel,
 )
+from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
@@ -197,7 +198,10 @@ async def dispatch(payload: dict) -> None:
         action_id.startswith(OPTIONS_ACTION_PREFIX) and "_done_" not in action_id
     )
     if _is_options:
-        if not await channel_inbound_permitted("slack"):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
             return
 
@@ -308,7 +312,10 @@ async def dispatch(payload: dict) -> None:
         # link button issued before the deny would move denied Slack content into
         # the dashboard. Same gate as an inbound message / the OPTIONS + review
         # actions; gated here BEFORE the import side effect.
-        if not await channel_inbound_permitted("slack"):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info("slack dashboard-link dropped: denied by channels governance policy")
             return
         thread_ts = payload.get("message", {}).get("thread_ts") or payload.get("container", {}).get(
@@ -458,7 +465,10 @@ async def dispatch(payload: dict) -> None:
     # from posting agent content to a now-denied channel — same gate as an inbound
     # message. ``cancel`` only discards the draft (posts nothing), so it is exempt.
     if action_id in ("mc_review_approve", "mc_review_edit", "mc_review_revise"):
-        if not await channel_inbound_permitted("slack"):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info("slack review action dropped: denied by channels governance policy")
             return
     if action_id == "mc_review_approve":
@@ -525,7 +535,10 @@ async def dispatch(payload: dict) -> None:
         # False rather than silently dropping. Silently returning would strand the
         # kiro-cli approval future until it times out (~300s) with the tool neither
         # run nor cleanly refused. Only approve/trust are blocked outright.
-        if approved and not await channel_inbound_permitted("slack"):
+        if approved and not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info("slack tool-approval dropped: denied by channels governance policy")
             # Resolve the pending future as DENIED so the tool is refused promptly
             # instead of left pending until timeout.
@@ -656,7 +669,10 @@ async def _handle_resume_choice(
         # published to a now-denied channel. Owner-initiated, but the content leak
         # is what the gate guards. (``!stop``-style cancellation exemptions do not
         # apply — a resume is not cancellation.)
-        if not await channel_inbound_permitted("slack"):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info("slack session resume dropped: denied by channels governance policy")
             return
 

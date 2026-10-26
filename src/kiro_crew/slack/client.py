@@ -20,6 +20,7 @@ from slack_sdk.http_retry.response import HttpResponse
 from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
+from kiro_crew.slack.channel_policy import require_channel
 from kiro_crew.slack.team_ids import use_channel_team_store
 
 logger = logging.getLogger(__name__)
@@ -487,6 +488,7 @@ class RealSlackClient(SlackClientOps):
         prompt-injected agent the one bit it needs to re-enable the fetch. See
         docs/request-for-change/rfc-redaction-explain-and-reveal.md §5.
         """
+        require_channel(channel)
         kwargs: dict[str, Any] = {"channel": channel, "text": text}
         if thread_ts is not None:
             kwargs["thread_ts"] = thread_ts
@@ -515,6 +517,7 @@ class RealSlackClient(SlackClientOps):
         Block Kit, so it is unaffected.
         """
         _refuse_remote_media(blocks)
+        require_channel(channel)
         kwargs: dict[str, Any] = {"channel": channel, "blocks": blocks, "text": text}
         if thread_ts is not None:
             kwargs["thread_ts"] = thread_ts
@@ -542,6 +545,9 @@ class RealSlackClient(SlackClientOps):
         # property of their fetchers, established by live check rather than by a
         # flag this code can set. See the messaging spec's preview invariant.
         _refuse_remote_media(blocks)
+        # An edit writes new content too, so a channel the policy stopped
+        # admitting after the post is refused here as well.
+        require_channel(channel)
         kwargs: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
         if blocks:
             kwargs["blocks"] = blocks
@@ -611,6 +617,7 @@ class RealSlackClient(SlackClientOps):
         filename: str,
         title: str,
     ) -> None:
+        require_channel(channel)
         await self._web.files_upload_v2(
             channel=channel,
             thread_ts=thread_ts,
@@ -637,6 +644,7 @@ class RealSlackClient(SlackClientOps):
         # fetchers exactly like a channel post does. A seam where one method out
         # of three checks is a seam callers can route around by accident.
         _refuse_remote_media(blocks)
+        require_channel(channel)
         kwargs: dict = {"channel": channel, "user": user_id, "text": text}
         if blocks:
             kwargs["blocks"] = blocks
@@ -708,6 +716,9 @@ class RealSlackClient(SlackClientOps):
         user_id: str | None = None,
     ) -> str | None:
         """Start a streaming message via chat.startStream with task plan mode."""
+        # Outside the try: a refused channel must not demote to a plain post,
+        # which the same check refuses anyway.
+        require_channel(channel)
         try:
             # Resolve this channel's home workspace before reading the cache.
             # Inbound Slack handlers call ensure_channel_team() once per message,
@@ -727,6 +738,8 @@ class RealSlackClient(SlackClientOps):
             # call when the channel is already cached or already known
             # unresolvable, which one inbound message per channel guarantees.
             await self.ensure_channel_team(channel)
+            # Again after that await: a policy installed while it ran must hold.
+            require_channel(channel)
             body: dict[str, Any] = {
                 "channel": channel,
                 "thread_ts": thread_ts,
@@ -785,6 +798,8 @@ class RealSlackClient(SlackClientOps):
     async def append_stream(self, channel: str, ts: str, text: str) -> bool:
         """Append markdown text to a streaming message via chat.appendStream."""
         try:
+            # Each chunk is new content; see update_message.
+            require_channel(channel)
             body: dict[str, Any] = {
                 "channel": channel,
                 "ts": ts,
@@ -809,6 +824,8 @@ class RealSlackClient(SlackClientOps):
     ) -> bool:
         """Append a task_update chunk to a streaming message."""
         try:
+            # Each chunk is new content; see update_message.
+            require_channel(channel)
             task: dict[str, Any] = {
                 "type": "task_update",
                 "id": task_id,
@@ -835,6 +852,8 @@ class RealSlackClient(SlackClientOps):
         that chat.update would downgrade to plain mrkdwn.
         """
         try:
+            # Each chunk is new content; see update_message.
+            require_channel(channel)
             body: dict[str, Any] = {"channel": channel, "ts": ts}
             self._inject_team(channel, body)
             await self._web.api_call("chat.stopStream", json=body)
@@ -846,6 +865,8 @@ class RealSlackClient(SlackClientOps):
     async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
         """Set assistant thread loading status via assistant.threads.setStatus."""
         try:
+            if status:  # clearing the indicator adds no content
+                require_channel(channel)
             await self._web.api_call(
                 "assistant.threads.setStatus",
                 params={"channel_id": channel, "thread_ts": thread_ts, "status": status},
@@ -856,6 +877,7 @@ class RealSlackClient(SlackClientOps):
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
         """Set assistant thread title via assistant.threads.setTitle."""
         try:
+            require_channel(channel)  # thread text is content; see update_message
             await self._web.api_call(
                 "assistant.threads.setTitle",
                 params={"channel_id": channel, "thread_ts": thread_ts, "title": title},
@@ -868,6 +890,7 @@ class RealSlackClient(SlackClientOps):
     ) -> None:
         """Set suggested prompts via assistant.threads.setSuggestedPrompts."""
         try:
+            require_channel(channel)  # thread text is content; see update_message
             import json
 
             await self._web.api_call(

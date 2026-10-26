@@ -124,6 +124,7 @@ _STRUCTURAL_KEYS = frozenset(
         "updates",
         "distribution",
         "fallback",
+        "yolo_max_seconds",
     }
 )
 
@@ -409,6 +410,7 @@ def parse_policy(
     raw_updates = data.get("updates")
     if raw_updates is not None and not isinstance(raw_updates, dict):
         raise PlatformCompositionError("security policy 'updates' must be an object")
+    yolo_max_seconds = _parse_yolo_max_seconds(data.get("yolo_max_seconds"))
     raw_distribution = data.get("distribution")
     if raw_distribution is not None and not isinstance(raw_distribution, dict):
         raise PlatformCompositionError("security policy 'distribution' must be an object")
@@ -453,7 +455,23 @@ def parse_policy(
         agentcore_identity_posture=composed_posture,
         agentcore_gateway_url=composed_gateway_url,
         agentcore_workload_name=composed_workload_name,
+        yolo_max_seconds=yolo_max_seconds,
     )
+
+
+def _parse_yolo_max_seconds(raw: object) -> int:
+    """The policy's ``yolo_max_seconds``: a positive whole number, or absent (0).
+
+    Fails closed on any other value: a ``false``, a string or ``0`` that read as
+    "no cap" would silently lift the bound the policy meant to set.
+    """
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise PlatformCompositionError(
+            f"security policy 'yolo_max_seconds' must be a positive integer, got {raw!r}"
+        )
+    return raw
 
 
 def parse_profile(data: Mapping[str, object]) -> Profile:
@@ -500,6 +518,12 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     # narrower "what an unusable profile falls back to", and a profile declaring its
     # own fallback would be nonsensical. Reject it loudly here (the loader turns this
     # into the deny-all fallback via Validation rule 5).
+    # ``yolo_max_seconds`` is POLICY-ONLY for the mechanical reason ``updates`` is:
+    # it is in _STRUCTURAL_KEYS, so a profile's copy would be skipped in silence.
+    if "yolo_max_seconds" in data:
+        raise PlatformCompositionError(
+            "profiles may not set 'yolo_max_seconds' — the auto-approve cap is policy-only"
+        )
     if "fallback" in data:
         raise PlatformCompositionError(
             "profiles may not set 'fallback' — the unusable-profile fallback is "

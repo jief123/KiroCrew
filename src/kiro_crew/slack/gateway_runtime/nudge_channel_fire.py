@@ -176,6 +176,13 @@ async def _fire_slack_inner_nudge(
         if self.autonudge_svc and wake_message is None:
             await self.autonudge_svc.remove(loop.id, stop_reason="slack_unroutable")
         return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    if channel_refusal(channel, operation="slack.autonudge", caller="autonudge"):
+        # The channel itself (``channels.posture.slack.allowed_channel_ids``): no
+        # unattended turn for a channel the policy does not admit.
+        logger.warning("AutoNudge: slack channel refused by policy for loop %s", loop.id)
+        return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     if wake_message is None:
         # Snapshot message, sentinel AND config generation TOGETHER, before
         # the compose_nudge_body() await, so a concurrent PATCH during that

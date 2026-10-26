@@ -89,3 +89,14 @@ BASELINE_UNGATED: Dict[str, str] = {
     "approval_mode": "ordinal; never item-queried, so Crew's own approval default applies",
     "sandbox.min_level": "ordinal; the RFC appendix keeps Crew's current sandbox default",
 }
+
+# Enterprise minimal values for the policy-only fields outside ``controls``, filled
+# into the authority before tiers compose (``tiers._with_enterprise_baseline``) so a
+# local tier can only narrow them, and read again where each is consumed.
+#: ``updates.channel`` (appendix "Update channel"): stable.
+ENTERPRISE_UPDATE_CHANNEL = "stable"
+#: ``yolo_max_seconds`` (appendix "Auto-approval duration"): the shortest selectable
+#: duration, ``agent.yolo_duration`` ``30m``. The baseline already denies ``yolo``.
+ENTERPRISE_YOLO_MAX_SECONDS = 1800
+#: ``channels.posture.slack.allowed_channel_ids`` (appendix "Slack channels"): none.
+ENTERPRISE_SLACK_CHANNELS: Mapping[str, object] = _OFF

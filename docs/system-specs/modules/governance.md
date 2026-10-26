@@ -292,6 +292,18 @@ pins ride in the policy file for it:
   not be satisfied by "we could not tell". The `cli.sh` managed venv's update
   checks the same pin against the feed and download URLs, so a git-only glob
   blocks that install's updates, mandatory ones included.
+- **`channel`** — the release channel the fleet follows (`stable`, `insider`
+  or `nightly`; any other value fails the load). It replaces the local
+  `$KIROCREW_HOME/channel` file as the channel read by
+  `update_layout.release_channel`. With no pin the file decides, except an
+  enterprise build follows `stable` (RFC crew-enterprise-edition, appendix row
+  "Update channel"). `POST /api/update/channel` naming another channel than the
+  one required answers 409 `locked_by_policy`, and `POST /api/update/approve`
+refuses an update armed on another channel (403 `approve_blocked_by_policy`);
+every wheel apply checks the pin again under the update lock before downloading
+(`wheel_engine.check_policy_channel`, enforced inside `apply_wheel_update` under the update lock immediately before `promote` swaps the stable link, which the dashboard approve, the scheduled auto-apply and `kirocrew server update` all reach; the reads before the download are advisory). Two tiers fold to the
+  authority's channel, else the subordinate's. The `cli.sh` installer still
+  reads the file directly.
 - **`min_version`** — the minimum version the fleet may run. On an install
   whose gateway updates itself, a host below it takes a **mandatory** update,
   overriding the user's `auto_update=false` (user config sits under the
@@ -2370,6 +2382,20 @@ top** of this keystone.
 
 ### Channels posture (per-transport identity ceiling)
 
+`channels.posture.slack.allowed_channel_ids` (policy-only, `identifier` globs such
+as `D*` for direct messages) names the Slack channels Crew may use (RFC
+crew-enterprise-edition, appendix row "Slack channels"). `slack.channel_policy.channel_refusal`
+reads the installed ceiling only (no file I/O) and is asked where a message comes
+in (`slack.events`, after the origin check, audited as a denied `slack.message`)
+and before every channel write of the real client (`post_message`, `post_blocks`,
+`post_ephemeral`, `upload_file`, `start_stream`, which raise
+`SlackChannelRefused`). Default-open with no policy or no leaf in an `oss` build;
+an enterprise build admits no channel until the policy names the leaf, and
+refuses on an evaluation error. Edits and stream appends are checked too, so a
+channel withdrawn mid-turn gets no further content, and each refused write is
+audited (`slack.write`). A pure `!stop` stays exempt from the inbound check so a
+withdrawn channel can still halt its turn; its notices are withheld there.
+
 `channels.posture.slack.allowed_enterprise_ids` (policy-only) is enforced in
 `slack.enterprise.validate_enterprise`: a workspace must satisfy the governance
 posture in ADDITION to the operator's `config.json`
@@ -3541,6 +3567,33 @@ so a saved duration change applies to the next grant without a gateway restart.
 `/api/status` reports the configured label and whether `until_shutdown` is
 permitted; the Settings UI can therefore withhold a no-expiry choice that the
 server would refuse.
+
+**`yolo_max_seconds` (policy top level, policy-only).** A positive whole number
+of seconds no auto-approve grant may outlast (RFC crew-enterprise-edition,
+appendix row "Auto-approval duration"); any other value fails the load, and a
+profile carrying it is rejected. Read through
+`safety_override_permits.yolo_ttl_cap`, a memory read of the installed ceiling.
+Under a cap `declared_grant_permitted()` and `until_shutdown_permitted()` answer
+false, `_commit_activation` installs a permanent or longer grant as a timed grant
+of the cap, scoped activations are held to it, a renewal (session-wide or a
+task's activity renewal) cannot carry a grant past its activation plus the cap
+(`ceiling_reached`), the cap is re-read under the state lock at every commit, and
+a ceiling install that sets one (`_push_yolo_policy`) moves the deadline of every
+live grant to its activation plus the cap before it publishes the permitting
+verdict (the invalidation mask denies until then) (`SafetyOverride.clamp_to_cap`): one
+already past it expires on its next read through the TTL-lapse path, and the
+inherited trust suspended for it is not restored. With no cap an `oss` build is unchanged and an
+enterprise build caps at 1800 seconds (`30m`, the shortest choice); the baseline
+already denies `yolo` there until a policy permits it. Two tiers fold to the
+lower cap.
+
+**Enterprise values under local tiers.** In an enterprise build
+`tiers._with_enterprise_value_floors` fills the authority's `updates.channel`
+(`stable`), `yolo_max_seconds` (1800) and, when `slack` is a permitted member, an
+empty `channels.posture.slack.allowed_channel_ids` before the tiers fold, the same
+way the baseline controls are filled. A home or env tier can therefore only narrow
+these values, never supply them; a central policy's own values stand, and a local
+authority's may only narrow the floors.
 
 ### Which tool-approval modes a deployment may select — `approval_modes`
 

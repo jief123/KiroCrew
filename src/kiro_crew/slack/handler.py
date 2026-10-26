@@ -199,6 +199,7 @@ from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     deprecation_warning_block,
 )
 from kiro_crew.slack.channel_crew import resolve_channel_crew  # noqa: F401 - read by the owners
+from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
@@ -973,7 +974,9 @@ async def handle_message(
     # hot-reloads by mtime). Default OSS build (no policy) permits, so behavior is
     # unchanged. Silently drop on deny — matching how an unauthorized user is
     # ignored — before any hook/command/turn processing.
-    if not await channel_inbound_permitted("slack"):
+    if not (
+        await channel_inbound_permitted("slack") and not channel_refusal(channel, caller=user_id)
+    ):
         logger.info("slack inbound dropped: denied by channels governance policy")
         return
 
