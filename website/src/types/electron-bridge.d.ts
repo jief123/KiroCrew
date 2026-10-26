@@ -242,6 +242,10 @@ declare global {
     channel?: string
     stampedChannel?: string | null
     channelSwitchable?: boolean
+    // The organization's policy sets the channel (an enterprise build).
+    channelLockedByPolicy?: boolean
+    // The channel the policy requires, "" when none.
+    requiredChannel?: string
     channelPreference?: string
     autoDownload?: boolean
     platform?: string

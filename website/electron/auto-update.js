@@ -547,13 +547,23 @@ function channelForVersion(version) {
  * About panel's "you are running prerelease bytes" note is keyed on); only the
  * followed feed is decoupled from it here.
  *
+ * A channel the policy requires (`required`, see runtime/update/policy-channel.js)
+ * replaces the preference. A build that cannot follow it (a nightly install
+ * asked for another lane, or a production install asked for nightly, which is a
+ * separate side-by-side app) has no lane: null, so updates stay off.
+ *
  * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
  * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = default
+ * @param {"nightly"|"insider"|"stable"|""} [required] - policy channel, "" = none
  * @returns {"nightly"|"insider"|"stable"|null}
  */
-function resolveChannel(stamped, preference) {
-  if (stamped === "nightly") return "nightly";
+function resolveChannel(stamped, preference, required = "") {
   if (stamped === null) return null;
+  if (required) {
+    if (stamped === "nightly") return required === "nightly" ? "nightly" : null;
+    return required === "insider" || required === "stable" ? required : null;
+  }
+  if (stamped === "nightly") return "nightly";
   if (preference === "insider" || preference === "stable") return preference;
   return "stable";
 }
@@ -929,6 +939,9 @@ function initAutoUpdate(deps) {
     Notification,
     getFlavor,
     getChannelPreference = () => "",
+    // The channel the policy requires, "" when none (an oss build). Read fresh,
+    // like the preference, which it replaces (resolveChannel).
+    getRequiredChannel = () => "",
     // Whether discovery may proceed straight to a download without a click.
     // Read FRESH per event, like getChannelPreference, so toggling it in
     // Settings takes effect on the next check with no re-init.
@@ -1009,6 +1022,7 @@ function initAutoUpdate(deps) {
     app,
     getFlavor,
     getChannelPreference,
+    getRequiredChannel,
     getAutoDownloadPreference,
     onUpdateState,
     uiDriven,
@@ -1025,7 +1039,7 @@ function initAutoUpdate(deps) {
     isNewerVersion,
     manualDownloadUrl,
   });
-  const { currentChannel, getInfo } = reporter;
+  const { currentChannel, getInfo, policyRefusal } = reporter;
 
   // An operator or distro packager that dropped the EXTERNALLY-MANAGED marker
   // owns this install's update lifecycle: the external package manager replaces
@@ -1082,6 +1096,12 @@ function initAutoUpdate(deps) {
   // Evaluated once at init, while currentChannel() is read per check: switching
   // channels in Settings mid-session surfaces the ordinary failure card until
   // the next launch, which the UI already handles.
+  // The policy requires a channel this build cannot follow: updates off, rather
+  // than the stable fallback currentChannel() reports for display.
+  if (policyRefusal()) {
+    log.info(`[update] ${policyRefusal()} — auto-update disabled`);
+    return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "policy-channel" };
+  }
   if (!channelHasLane(currentChannel())) {
     log.info(`[update] ${osPlatform} has no ${currentChannel()} publish lane — auto-update disabled`);
     return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "channel" };

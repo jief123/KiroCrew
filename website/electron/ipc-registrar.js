@@ -14,6 +14,7 @@ const {
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { initAutoUpdate } = require("./auto-update");
+const { requiredUpdateChannelFor } = require("./runtime/update/policy-channel");
 const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
@@ -52,6 +53,9 @@ function createIpcRegistrar({
   // only to redeem an external-terminal grant at this shell's own gateway.
   readInternalSecret = () => "",
   fetchFn = (url, init) => fetch(url, init),
+  // The update channel this build must follow, "" when Settings decides (an oss
+  // build). See runtime/update/policy-channel.js.
+  getRequiredChannel = requiredUpdateChannelFor(),
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -614,6 +618,7 @@ function createIpcRegistrar({
         Notification,
         getFlavor: () => "stable",
         getChannelPreference: () => store.get("updateChannel", ""),
+        getRequiredChannel,
         getAutoDownloadPreference: () =>
           store.get("autoDownloadUpdates", true) !== false,
         notifyUpdateFound: (version, { autoDownload = false } = {}) => {
@@ -702,6 +707,18 @@ function createIpcRegistrar({
       const next = typeof channel === "string" ? channel : "";
       if (next !== "" && next !== "insider" && next !== "stable") {
         return { ok: false, error: `invalid channel: ${next}` };
+      }
+      // A required channel replaces the preference, so storing another one
+      // would be a switch that does nothing. The dashboard's
+      // POST /api/update/channel answers the same way (409 locked_by_policy).
+      const required = getRequiredChannel();
+      if (required && next !== required) {
+        return {
+          ok: false,
+          code: "locked_by_policy",
+          error: `updates follow the ${required} channel set by your organization's policy`,
+          info: updaterInfo(),
+        };
       }
       store.set("updateChannel", next);
       updater.check();

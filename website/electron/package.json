@@ -177,6 +177,7 @@
       "runtime/update/managed-lane.js",
       "runtime/update/freshness-gate.js",
       "runtime/update/feed-lane.js",
+      "runtime/update/policy-channel.js",
       "update-logger.js",
       "bundle-location.js",
       "gateway-auth-hint.js",

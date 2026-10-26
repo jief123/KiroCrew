@@ -22,6 +22,7 @@ import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
+import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
 import { i18nT } from '../../i18n/t'
@@ -1153,7 +1154,21 @@ export function AboutPanel() {
               )}
             </div>
           ) : (
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              {info?.channelLockedByPolicy ? (
+                <span className="inline-flex items-center gap-2">
+                  {channel}
+                  {/* A build that cannot follow the required channel names both:
+                      the lane it is on, and the one the policy requires. */}
+                  {info.requiredChannel && info.requiredChannel !== channel && (
+                    <span className="text-muted" data-testid="channel-requires">
+                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
+                    </span>
+                  )}
+                  <LockedByPolicyBadge />
+                </span>
+              ) : channel}
+            </Row>
           )
         )}
         {showGwChannelSwitcher && (
@@ -1361,7 +1376,28 @@ export function AboutPanel() {
                       // Falling through to the platform string would blame the
                       // OS and hide the way back.
                       ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel')
-                      : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
+                      : updatesDisabled === 'policy-channel'
+                        // The policy names a channel this build cannot follow:
+                        // name it, and link its build as the way back.
+                        ? (
+                          <span data-testid="updates-policy-channel">
+                            {i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_policy_channel', { build: channel, channel: info?.requiredChannel })}
+                            {manualUrl && (
+                              <>
+                                {' '}
+                                <Trans
+                                  i18nKey="pages.settings.aboutPanel.automatic_updates_policy_channel_download"
+                                  values={{ channel: info?.requiredChannel }}
+                                  components={{
+                                    // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                                    download: <a href={manualUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                                  }}
+                                />
+                              </>
+                            )}
+                          </span>
+                        )
+                        : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
             </p>
           ) : (
             <div className="flex flex-col gap-2.5">

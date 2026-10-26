@@ -59,7 +59,7 @@ function createFeedLane({
   feedBase,
   uiDriven,
   log,
-  reporter: { currentChannel, emit, getInfo, recordLaneVersion },
+  reporter: { currentChannel, emit, getInfo, policyRefusal = () => "", recordLaneVersion },
   buildFeedBase,
   classifyError,
   shouldAutoOffer,
@@ -168,6 +168,10 @@ function createFeedLane({
   }
 
   function configureFeed() {
+    // The policy now requires a channel this build cannot follow: no feed at all,
+    // rather than the display fallback currentChannel() would point it at.
+    const refusal = policyRefusal();
+    if (refusal) throw new Error(refusal);
     const channel = currentChannel();
     // Record the channel this check's feed is configured for, so the
     // update-available handler compares the candidate against THIS lane rather

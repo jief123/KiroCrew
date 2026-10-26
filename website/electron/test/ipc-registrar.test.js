@@ -195,6 +195,7 @@ function harness({
   dialogResult = { canceled: true, filePaths: [] },
   externalTerminal = undefined,
   internalSecret = "",
+  getRequiredChannel = undefined,
   detectWsl = async () => ({
     available: true,
     distros: [],
@@ -378,6 +379,7 @@ function harness({
     },
     glog: (line) => logs.push(line),
     ...(externalTerminal ? { externalTerminal } : {}),
+    ...(getRequiredChannel ? { getRequiredChannel } : {}),
     // Like main.js's readInternalSecret: the secret belongs to one gateway
     // URL, so a read that names no URL gets nothing.
     readInternalSecret: (gatewayUrl) => {
@@ -1416,6 +1418,42 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   });
   assert.equal(h.handlers.get("update:set-auto-download")({}, false).ok, true);
   assert.equal(h.store.data.autoDownloadUpdates, false);
+});
+
+test("update:set-channel refuses while the policy requires a channel, and hands it to the updater", () => {
+  const updater = updaterHandle();
+  let deps;
+  const h = harness({
+    getRequiredChannel: () => "stable",
+    initAutoUpdate(options) {
+      deps = options;
+      return updater;
+    },
+  });
+  h.registerUpdater(h.registrar);
+  assert.equal(deps.getRequiredChannel(), "stable");
+  const answer = h.handlers.get("update:set-channel")({}, "insider");
+  assert.equal(answer.ok, false);
+  assert.equal(answer.code, "locked_by_policy");
+  assert.equal(h.store.data.updateChannel, undefined, "nothing is stored");
+  assert.deepEqual(updater.calls, [], "no check is started");
+  // Naming the required channel itself is accepted, as the backend accepts it.
+  assert.equal(h.handlers.get("update:set-channel")({}, "stable").ok, true);
+  assert.equal(h.store.data.updateChannel, "stable");
+});
+
+test("an oss build hands the updater no required channel and keeps the switcher", () => {
+  let deps;
+  const h = harness({
+    initAutoUpdate(options) {
+      deps = options;
+      return updaterHandle();
+    },
+  });
+  h.registerUpdater(h.registrar);
+  assert.equal(deps.getRequiredChannel(), "");
+  assert.equal(h.handlers.get("update:set-channel")({}, "insider").ok, true);
+  assert.equal(h.store.data.updateChannel, "insider");
 });
 
 test("updater initialization is fail-open and still installs all IPC", async () => {
