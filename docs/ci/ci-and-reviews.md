@@ -4286,6 +4286,23 @@ capped at 6,000 bytes, and explicitly untrusted data: it can downgrade the
 repetition of an adjudicated finding class, and it can never
 waive a new defect or authorize a green verdict.
 
+After the ledger, the same step appends a PUSH BUDGET section
+(`.github/review-prompts/gpt-push-budget.md`) once the PR has had three blocked
+pushes. A blocked push is a distinct earlier head that failed a review-lane
+workflow (`codex-review`, `claude-review`, `design-review`, `ux-review`,
+`first-principles-review`, `security-scope-review`) or received a
+`CHANGES_REQUESTED` review; the current head is never counted. A lane run that
+failed for an infrastructure reason or a timeout also counts, so the number is a
+hint, not a measure of review findings. The section asks the reviewer to add one
+`Sites:` line per BLOCKING item and, for a root cause a ruling already fixed
+twice, a `Remedy: narrow or remove the mechanism` line. It never changes an
+item's `Anchor:` line: the security fence in the adjudication step reads that
+line, so re-anchoring a recurring security finding would un-fence it. It is staged from the base commit with no checkout fallback, so it is off
+until the file is on the base. The count is read with GET calls only (the
+workflow holds `actions: read` for it); a count that cannot be read leaves the
+prompt unchanged and prints a notice, and a first-time review is exactly as
+long as before. The Opus lane and `gpt-review-core.md` are unchanged.
+
 GPT makes exactly two GPT calls. Pass 1 discovers candidates across the
 full diff; pass 2 attempts to falsify each candidate and emits the only GPT
 verdict exposed to the comment and gate. Blocking candidates may then receive a
