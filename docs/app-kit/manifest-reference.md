@@ -1036,10 +1036,11 @@ installs do not run `onInstall`; build first, then install. The `onEnable`,
 **not run on native Windows** (which has no `/bin/bash`): the runner refuses the
 hook before any process is started and reports a failure whose message names the
 unsupported platform, rather than letting the spawn fail opaquely and look like
-your script breaking. `onInstall` also runs through `/bin/bash`, without that
-up-front refusal, so a registry install of an app that declares it fails on a
-native-Windows host. Write hooks for POSIX shells; do not rely on them running
-on a native-Windows host.
+your script breaking. `onInstall` also runs through `/bin/bash` and gets the
+same up-front refusal: a registry install or update of an app that declares it
+fails on a native-Windows host with an error naming the unsupported platform,
+before the script is started. Write hooks for POSIX shells; do not rely on them
+running on a native-Windows host.
 
 **Exception — `platform.installMode: "client"` apps.** For a client app the
 script is **advisory**: a failure is reported on the response as

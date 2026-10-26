@@ -30,6 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 from apps_registry_helpers import _catalog_absent  # noqa: F401 - fixture
 from apps_registry_helpers import _explicit_registry_execution_admission  # noqa: F401 - fixture
+from apps_registry_helpers import _install_script_runs_on_this_host  # noqa: F401 - fixture
 from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 
 from kiro_crew import platform_compat
@@ -516,3 +517,69 @@ async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, ma
     assert events[1]["resources"].endswith(expected[1])
     # Script output is never written into the audit record.
     assert all("secret-output" not in str(e) for e in events)
+
+
+# Read at import, before the module's autouse pin replaces it for every test.
+_REAL_PLATFORM_REFUSAL = registry._install_script_platform_refusal
+
+
+def test_install_script_platform_refusal_is_native_windows_only(monkeypatch):
+    """`onInstall` runs through /bin/bash: refused off POSIX, allowed on POSIX."""
+    monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+    assert _REAL_PLATFORM_REFUSAL() is None
+
+    monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+    reason = _REAL_PLATFORM_REFUSAL()
+    assert reason is not None
+    assert "native Windows" in reason
+    assert "/bin/bash" in reason
+
+
+@pytest.mark.asyncio
+async def test_install_script_on_native_windows_fails_clearly_without_spawning(
+    monkeypatch, tmp_path
+):
+    """On native Windows there is no /bin/bash to run onInstall through. The
+    install returns a failed outcome naming the platform and starts no process."""
+    monkeypatch.setattr(registry, "_install_script_platform_refusal", _REAL_PLATFORM_REFUSAL)
+    monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
+
+    async def _fake_manifest(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(registry, "_fetch_app_manifest", _fake_manifest)
+    monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    audit = MagicMock()
+    monkeypatch.setattr(registry, "sel", lambda: audit)
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "demoapp", "setup": {"onInstall": "npm install"}}),
+        encoding="utf-8",
+    )
+
+    async def _fake_build(git_url, name, log_lines, branch="main", **kwargs):
+        return {"ok": True, "pkg_dir": tmp_path}
+
+    monkeypatch.setattr(registry, "_clone_build_app", _fake_build)
+
+    async def _no_spawn(*args, **kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_spawn)
+    monkeypatch.setattr(registry, "create_subprocess_limited", _no_spawn)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is False
+    assert "native Windows" in result["error"]
+    assert "/bin/bash" in result["error"]
+    assert "native Windows" in result["log"]
+    # The script never started, so no `started` audit event was written.
+    assert not [
+        c
+        for c in audit.log_api_access.call_args_list
+        if c.kwargs.get("operation") == "app_install_script"
+    ]

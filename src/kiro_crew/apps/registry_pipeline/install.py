@@ -202,6 +202,28 @@ def _trust_grant_would_stay_local(name: str) -> bool:
     return resolved and not repository
 
 
+#: Why an app lifecycle hook is not run on native Windows. The one copy of the
+#: text: ``run_lifecycle_script`` reports it for the sibling hooks too.
+NATIVE_WINDOWS_HOOK_REFUSAL = (
+    "app lifecycle hooks are not supported on native Windows (they run through /bin/bash)"
+)
+
+
+def _install_script_platform_refusal() -> str | None:
+    """Why ``setup.onInstall`` cannot run on this host, or None when it can.
+
+    ``onInstall`` runs through ``/bin/bash -c``, and native Windows has no
+    ``/bin/bash``. The sibling hooks (``onEnable`` / ``onDisable`` /
+    ``onUninstall``) refuse there up front in ``run_lifecycle_script``; this is
+    the same policy for the one hook that runs in the install transaction, so
+    the user gets a reason naming the platform instead of a spawn error that
+    reads as the app's own script breaking.
+    """
+    if platform_compat.IS_POSIX:
+        return None
+    return f"install script not run: {NATIVE_WINDOWS_HOOK_REFUSAL}"
+
+
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
@@ -873,6 +895,15 @@ async def install_from_registry(
         layout_before = await asyncio.to_thread(_desktop_layout_present, app_source)
 
         # Step 2: Run install script
+        refusal = _install_script_platform_refusal() if install_script else None
+        if refusal:
+            # Nothing was spawned, so the checkout is as the build left it; the
+            # retained/restorable-stale handling is owned by the `finally` below,
+            # as on the script's own failure exits.
+            logger.warning("App %s onInstall not run: %s", name, refusal)
+            log_lines.append(refusal)
+            outcome = {"ok": False, "name": name, "error": refusal}
+            return outcome
         if install_script:
             log_lines.append(f"Running install script: {install_script}")
             # Sandboxed via wrap_argv(); consider migrating to AcpClient._spawn() for full OS-level isolation.

@@ -718,8 +718,10 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.install import (  # noqa: F401
         _SCRIPT_TIMEOUT,
+        NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
         StreamingLogLines,
+        _install_script_platform_refusal,
         _official_entry,
         _remote_controlled_url,
         _retained_startup_refusal,
