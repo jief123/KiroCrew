@@ -785,6 +785,7 @@ build_backend_windows() {
     rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 \
            include libs tcl \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64_dotprod \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_x86_64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_arm64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_x86_64 \
