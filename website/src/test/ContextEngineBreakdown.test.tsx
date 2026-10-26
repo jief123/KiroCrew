@@ -117,7 +117,17 @@ describe('breakdownOf, a measured turn', () => {
     const crew = row(breakdownOf(latest()).rows, 'crew')
     expect(crew.label).toBe('Kiro Crew')
     expect(crew.chars).toBe(12_000)
-    expect(crew.children!.map(r => r.label)).toEqual(['Kiro Crew rules', 'Kiro Crew skills', 'Kiro Crew memory', 'Kiro Crew other'])
+    expect(crew.children!.map(r => r.label)).toEqual(['Kiro Crew rules', 'Kiro Crew skills', 'Kiro Crew memory', 'Kiro Crew session details'])
+  })
+
+  it("gives the engine's Other its own pink, never the grey of Rest of the context", () => {
+    const other = row(breakdownOf(latest()).rows, 'other')
+    expect(other.label).toBe('Other')
+    expect(other.color).toBe('var(--ctx-eng-other)')
+    const rest = row(breakdownOf(latest({ engine: null, context_used: 9_000 })).rows, 'rest')
+    expect(rest.color).toBe('var(--ctx-eng-loop)')
+    // The bar draws each part in its row's colour.
+    expect(barSegments(breakdownOf(latest()).rows).find(s => s.id === 'other')?.color).toBe('var(--ctx-eng-other)')
   })
 
   it('puts Your messages right after Kiro Crew; Messages is the rest of the history', () => {
@@ -127,7 +137,7 @@ describe('breakdownOf, a measured turn', () => {
     expect(messages.label).toBe('Messages')
     expect(messages.chars).toBe(12_192 - 12_000 - 100)
     expect(messages.children!.map(r => [r.label, r.chars])).toEqual([
-      ['Other user text', 73],
+      ['Other text sent as you', 73],
       ['Replies', 10],
       ['Reasoning', 9],
     ])
@@ -234,7 +244,7 @@ describe('the one breakdown on the panel', () => {
 
   it('shows list counts next to the label', () => {
     render(<ContextBreakdownPanel trace={trace(latest())} chartWidth={600} />)
-    expect(document.querySelector('[data-engine-row="skillsIndex"]')!.textContent).toMatch(/Skills list\(28\)/)
+    expect(document.querySelector('[data-engine-row="skillsIndex"]')!.textContent).toMatch(/Skill list \(engine\)\(28\)/)
   })
 
   it('names a segment on hover in its own line, above the bar', () => {
@@ -263,7 +273,7 @@ describe('the one breakdown on the panel', () => {
     const crew = section.querySelector('[data-engine-row="crew"]')!.textContent
     expect(crew).toMatch(/~3,000 tokens/)
     expect(crew).toMatch(/12,000 characters/)
-    expect(section.querySelector('[data-engine-row="rest"]')!.textContent).toMatch(/Rest of the context~82,286 tokens96%/)
+    expect(section.querySelector('[data-engine-row="rest"]')!.textContent).toMatch(/Rest of the contextHow to split it~82,286 tokens96%/)
     // The bar is drawn against the window: purples, then the grey rest.
     const segs = Array.from(within(section).getByTestId('engine-bar').querySelectorAll('[data-engine-seg]'))
     expect(segs.map(s => s.getAttribute('data-engine-seg')).slice(-1)).toEqual(['rest'])
@@ -284,7 +294,7 @@ describe('the one breakdown on the panel', () => {
     fireEvent.focus(glyph)
     const tip = screen.getByRole('tooltip')
     expect(tip.textContent).toBe(
-      "Kiro CLI doesn't report what's in this part. To see it, open Settings > Agent Harness, pick Kiro Agent, then start a new session.",
+      "Kiro CLI doesn't report what's in this part. To see it, open Settings > Agent Harness and pick Kiro Agent. New sessions then use Kiro Agent; this session keeps its current agent.",
     )
     expect(tip.textContent).not.toMatch(/ACP|agent loop/i)
     cleanup()
@@ -311,8 +321,29 @@ describe('the one breakdown on the panel', () => {
       <ContextBreakdownPanel trace={trace(latest({ engine: null, context_used: 85_311 }))} harness="kas" chartWidth={600} />,
     )
     fireEvent.focus(screen.getByRole('button', { name: /more information/i }))
-    expect(screen.getByRole('tooltip').textContent).toBe('Not measured for this turn yet.')
+    expect(screen.getByRole('tooltip').textContent).toBe("Estimated. The engine hasn't measured this turn yet.")
     expect(screen.getByRole('tooltip').textContent).not.toMatch(/Settings|Kiro Agent/)
+  })
+
+  it('names which tip it is before any hover: waiting on a measurement, or how to get one', () => {
+    const unsplit = trace(latest({ engine: null, context_used: 85_311 }))
+    const tag = () => document.querySelector('[data-engine-row="rest"] [data-engine-tip-tag]')?.textContent
+    render(<ContextBreakdownPanel trace={unsplit} harness="kas" chartWidth={600} />)
+    expect(tag()).toBe('Not measured yet')
+    cleanup()
+    render(<ContextBreakdownPanel trace={unsplit} harness="kiro" chartWidth={600} />)
+    expect(tag()).toBe('How to split it')
+    cleanup()
+    // A harness that could not be read: no tip and no label.
+    render(<ContextBreakdownPanel trace={unsplit} harness={null} chartWidth={600} />)
+    expect(tag()).toBeUndefined()
+  })
+
+  it('names the engine rows apart from the Kiro Crew rows', () => {
+    const b = breakdownOf(latest())
+    expect(row(b.rows, 'kiroInstructions').label).toBe('Engine system prompt')
+    expect(row(b.rows, 'skillsIndex').label).toBe('Skill list (engine)')
+    expect(row(b.rows, 'history').children!.find(r => r.id === 'history.user_other')!.label).toBe('Other text sent as you')
   })
 
   it('in a narrow panel, puts the characters under the tokens so the label keeps its room', () => {

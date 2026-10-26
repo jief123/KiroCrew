@@ -12,7 +12,7 @@ import json
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from kiro_crew.constants import crew_log_enabled, env_file_display
@@ -222,6 +222,43 @@ def _as_blocks(ours: Any) -> dict[str, int]:
     }
 
 
+def _usage_read(slot: str) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    """The slot's rendered ``usage`` context, its in-memory context state, and the
+    revision both came from: one warm read, so the two always agree."""
+    from kiro_crew.crew_log.projection import projection_of, read_slot_state
+
+    try:
+        checkpoint, revision = read_slot_state(slot, "usage")
+        folded = projection_of(checkpoint, revision=revision).value
+        state = checkpoint.state
+        ctx = state.get("ctx") if isinstance(state, dict) else None
+    except Exception:
+        logger.warning("usage fold unreadable for slot %s", slot, exc_info=True)
+        return {}, None, 0
+    context = folded.get("context") if isinstance(folded, dict) else None
+    return (
+        context if isinstance(context, dict) else {},
+        ctx if isinstance(ctx, dict) else None,
+        int(revision),
+    )
+
+
+def context_turn_detail(slot: str, ordinal: int) -> dict[str, Any] | None:
+    """One kept turn of *slot* as its whole panel, from the in-memory fold state.
+
+    The pushed value carries only the chart's numbers per turn; the panel asks for a
+    past turn's own blocks and engine parts here when that turn is picked. None when
+    no kept row has *ordinal* (it left the ring, or never was).
+    """
+    from kiro_crew.crew_log.projection import context_turn
+
+    _context, ctx, revision = _usage_read(slot)
+    detail = context_turn(ctx, ordinal) if ctx is not None else None
+    if detail is None:
+        return None
+    return {"slot": slot, "turn": detail, "revision": revision}
+
+
 def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
     """The slot's context, from its ``usage`` projection: the newest turn and a trend.
 
@@ -231,53 +268,50 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
     newest occupancy reading at ``chars_per_token`` and marked so. ``trend`` is the
     newest 30 turns, each with its own turn ordinal, Crew's five sums and the agent
     loop's part; ``earlier`` counts the turns before them and ``start`` is the newest
-    session-start turn, listed apart.
+    session-start turn, listed apart with the size its own panel heads with. A past
+    turn's whole panel is read on demand (:func:`context_turn_detail`). ``revision``
+    is the fold revision the page was read at, the panel's cache key for those reads.
 
-    The fold holds the newest state only, with no per-turn history and no per-block
-    labels, so *days* is accepted and echoed as ``window_days`` but selects nothing.
-    ``turns``, ``totals`` and ``injected_chars`` are built from the trend for the
-    Session Breakdown tree, which reads them per sub-agent; ``peak_context_used`` is
-    the newest occupancy reading.
+    ``turns``, ``totals`` and ``injected_chars`` are built from the kept turns for the
+    Session Breakdown tree, which reads them per sub-agent, each turn with what IT
+    sent. ``peak_context_used`` and ``context_window`` are ONE pair from the fullest
+    turn closed in the last *days* (:func:`context_peak`), else 0 and the configured
+    window; *days* selects nothing else and is echoed as ``window_days``.
     """
-    from kiro_crew.crew_log.projection import read_slot_projection
+    from kiro_crew.crew_log.projection import context_peak, context_turn_blocks
 
-    try:
-        folded = read_slot_projection(slot, "usage").value
-    except Exception:
-        logger.warning("usage fold unreadable for slot %s", slot, exc_info=True)
-        folded = {}
-    context = folded.get("context") if isinstance(folded, dict) else None
-    if not isinstance(context, dict):
-        context = {}
+    context, ctx, revision = _usage_read(slot)
     latest = context.get("latest") if isinstance(context.get("latest"), dict) else None
     trend = [row for row in (context.get("trend") or []) if isinstance(row, dict)]
     start = context.get("start") if isinstance(context.get("start"), dict) else None
 
     turns: list[dict[str, Any]] = []
-    for row, phase in ([(start, "session_start")] if start else []) + [
-        (r, "per_turn") for r in trend
-    ]:
-        blocks = _as_blocks(row.get("ours"))
+    for ordinal, phase, blocks in context_turn_blocks(ctx) if ctx is not None else []:
+        # What THIS turn sent, by label: the Session Breakdown tree draws one bar per
+        # turn under a per-turn caption, and the five sums are running totals since
+        # the context restarted (the panel's resident view), which would grow each bar.
+        if not blocks:
+            continue
         turns.append(
             {
-                "ts": "",
                 "phase": phase,
                 "blocks": blocks,
                 "total_chars": sum(blocks.values()),
-                "context_used": 0,
-                "context_window": 0,
-                "model": "",
-                "ordinal": _coerce_int(row.get("turn")),
+                "ordinal": ordinal,
                 "first_start": phase == "session_start",
             }
         )
     totals = _as_blocks(latest.get("ours")) if latest else {}
-    used = _coerce_int(latest.get("context_used")) if latest else 0
-    window = _coerce_int(latest.get("context_window")) if latest else 0
+    # The fullest turn INSIDE the requested days, as one reading and its own window:
+    # the Session Breakdown tree divides one by the other, and a model switch moves
+    # the window, so the pair must come from the same turn.
+    since_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    used, window = context_peak(ctx, since_ms) if ctx is not None else (0, 0)
 
     recording = crew_log_enabled()
     payload: dict[str, Any] = {
         "slot": slot,
+        "revision": revision,
         "latest": latest,
         "trend": trend,
         "start": start,
@@ -291,7 +325,6 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
         "peak_context_used": used,
         "context_window": window,
         "window_days": days,
-        "engine_unknown": {},
         "recording": recording,
     }
     if not recording:

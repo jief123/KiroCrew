@@ -770,8 +770,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CONTEXT_TOP_SESSIONS,
         _as_blocks,
         _row_iso,
+        _usage_read,
         context_occupancy,
         context_trace,
+        context_turn_detail,
     )
     from kiro_crew.dashboard.handlers.usage_cost import (  # noqa: F401
         _COMPACTION_DROP_PCT,

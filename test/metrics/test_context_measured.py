@@ -120,6 +120,15 @@ def _trace() -> dict[str, Any]:
     return usage_mod.context_trace(SLOT, 14)
 
 
+def _turn_read(ordinal: int) -> dict[str, Any]:
+    """One kept turn's whole panel, as ``?turn=<ordinal>`` serves it."""
+    assert_drained()
+    crew_log.forget_slot_folds()
+    read = usage_mod.context_turn_detail(SLOT, ordinal)
+    assert read is not None
+    return read["turn"]
+
+
 def _usage() -> dict[str, Any]:
     assert_drained()
     crew_log.forget_slot_folds()
@@ -272,6 +281,75 @@ def test_an_older_measurement_is_not_shown_for_a_newer_unmeasured_turn():
 # --------------------------------------------------------------------------- #
 
 
+def test_a_past_turn_keeps_its_own_blocks_and_its_own_engine_breakdown():
+    """Every kept turn opens whole: its Kiro Crew blocks by name, the engine's parts
+    when it measured that turn, and its time to first output; a turn the engine did
+    not measure keeps its own reading for the estimated view."""
+    _open()
+    crew_log_emit.on_context_composed(
+        UNIT, 1, blocks={USER_LABEL: 40, "lessons": 3_000, "skill_index": 960}, phase=PHASE_PER_TURN
+    )
+    crew_log_emit.on_context_measured(
+        UNIT, 1, profile={**_real_profile(user=4_000), "turn_id": "t-a"}
+    )
+    crew_log_emit.on_turn_completed(
+        UNIT,
+        1,
+        model="model-a",
+        credits=0.1,
+        context_used=30_000,
+        context_window=1_000_000,
+        stop_reason="end_turn",
+    )
+    _turn(2, 500, None, used=31_000)
+    _turn(3, 500, None, used=32_000)
+    first = _trace()["trend"][0]
+    assert first["turn"] == 1
+    detail = _turn_read(1)
+    assert detail["blocks"] == {USER_LABEL: 40, "lessons": 3_000, "skill_index": 960}
+    assert detail["engine"]["total_chars"] == 59_333
+    assert set(detail["engine"]["categories"]) == set(kas_profile.KNOWN_CATEGORIES)
+    assert detail["engine"]["parts"]["toolIO"] == {"input": 20, "output": 82}
+    assert detail["engine"]["counts"]["skillsIndex"] == 28
+    assert detail["ttft_ms"]["total_ms"] == 2_870
+    assert detail["loop_estimated"] is False
+    # The unmeasured turn 2 shows its own reading, estimated, and its own blocks.
+    second = _turn_read(2)
+    assert second["engine"] is None
+    assert second["context_used"] == 31_000
+    assert second["loop_estimated"] is True
+    assert second["blocks"] == {USER_LABEL: 40, "lessons": 460}
+    # The page and the pushed value carry only the chart's numbers per row.
+    assert set(_trace()["trend"][0]) == {"turn", "ours", "loop", "used"}
+    # Each row's own reading, the harness total its column is drawn up to.
+    assert [row["used"] for row in _trace()["trend"]] == [30_000, 31_000, 32_000]
+
+
+def test_the_session_tree_draws_what_each_turn_sent_not_the_running_sum():
+    """The Session Breakdown tree draws one bar per ``turns`` entry under a per-turn
+    caption: three turns injecting 1,000 each are 1,000 each, while the panel's
+    resident view still sums them."""
+    _open()
+    for turn in (1, 2, 3):
+        _turn(turn, 1_000, None, used=5_000 + turn)
+    trace = _trace()
+    assert [t["total_chars"] for t in trace["turns"]] == [1_000, 1_000, 1_000]
+    assert trace["turns"][0]["blocks"] == {USER_LABEL: 40, "lessons": 960}
+    assert [sum(r["ours"].values()) for r in trace["trend"]] == [1_000, 2_000, 3_000]
+
+
+def test_a_row_keeps_at_most_the_composers_blocks_and_counts_the_rest():
+    _open()
+    blocks = {f"block_{i:03d}": 10 for i in range(measured_mod.BLOCKS_PER_TURN + 6)}
+    crew_log_emit.on_context_composed(UNIT, 1, blocks=blocks, phase=PHASE_PER_TURN)
+    crew_log_emit.on_turn_completed(UNIT, 1, model="model-a", stop_reason="end_turn")
+    detail = _turn_read(1)
+    assert len(detail["blocks"]) == measured_mod.BLOCKS_PER_TURN
+    assert detail["blocks_omitted"] == 6
+    # Every character still counts in the five sums.
+    assert sum(detail["ours"].values()) == 10 * (measured_mod.BLOCKS_PER_TURN + 6)
+
+
 def test_the_ring_keeps_the_newest_thirty_turns_and_counts_the_rest_exactly():
     _open()
     for turn in range(1, 36):
@@ -308,6 +386,19 @@ def test_every_row_keeps_its_own_ordinal_across_several_session_starts():
     # Each session's sums restart and run over its own start turn.
     assert [sum(r["ours"].values()) for r in trace["trend"]] == [30_500, 30_502, 30_504]
     assert trace["earlier"] == 1
+
+
+def test_a_new_session_shows_no_breakdown_from_the_previous_session():
+    """A measured turn, then a new (not resumed) session opens: read before its first
+    composition, the panel shows no engine breakdown or time to first output left over
+    from the previous engine session."""
+    _open()
+    _turn(1, 4_000, _real_profile(user=4_000))
+    assert _latest()["engine"] is not None
+    _open("acp-measured-2")
+    latest = _latest()
+    assert latest["engine"] is None
+    assert latest["ttft_ms"] is None
 
 
 def test_a_new_session_does_not_show_the_previous_sessions_occupancy():
@@ -411,16 +502,15 @@ def test_an_edit_resend_inside_the_ring_keeps_its_ordinal_with_real_turn_numbers
 
 
 @pytest.mark.parametrize("step", [2, 3])
-def test_an_edit_resend_older_than_the_ring_cuts_nothing_and_keeps_the_start(step):
-    """Turn 5's row left the ring, so its ordinal is not known: no arithmetic on turn
-    numbers guesses one. It takes a new ordinal; the start row and the ring stay, and
-    the count never falls below the ring's oldest ordinal."""
+def test_an_edit_resend_older_than_the_ring_keeps_its_ordinal_and_the_start(step):
+    """Turn 5's row left the ring, but the ordinal memo still holds its number, so it
+    keeps ordinal 5: every ring row after it goes, the start row (turn 1, before it)
+    stays, and the count is the real one."""
     trace = _forty_turns_then(step, 5)
-    ordinals = [r["turn"] for r in trace["trend"]]
-    assert ordinals == list(range(12, 42))
+    assert [r["turn"] for r in trace["trend"]] == [5]
     assert trace["start"]["turn"] == 1
-    assert trace["turn_count"] == 41
-    assert len(set(ordinals + [trace["start"]["turn"]])) == len(ordinals) + 1
+    assert trace["turn_count"] == 5
+    assert trace["earlier"] == 4
 
 
 def test_the_count_grows_again_past_a_rewind():
@@ -520,11 +610,14 @@ def _string_chars(obj: Any) -> int:
     return 0
 
 
-def test_the_usage_state_is_the_same_size_after_10_and_after_1000_turns():
-    small, large = _fold_turns(10), _fold_turns(1_000)
+def test_the_usage_state_is_the_same_size_after_210_and_after_1000_turns():
+    """Once the ring and the peak readings are full the state stops growing: each row
+    holds one turn whole, so a longer session replaces rows rather than adding any."""
+    small, large = _fold_turns(measured_mod.PEAK_READINGS + 10), _fold_turns(1_000)
     assert _shape(small) == _shape(large)
+    # Only the ordinal memo's one string grows, and it is bounded on its own.
+    small["ctx"].pop("turn_memo"), large["ctx"].pop("turn_memo")
     assert _string_chars(small) == _string_chars(large)
-    assert _shape(small["ctx"]) == _shape(measured_mod.context_start())
     assert large["ctx"]["turns"] == 1_000
     assert large["ctx"]["trend_rows"] == measured_mod.TREND_TURNS
 
@@ -533,12 +626,25 @@ def test_an_entry_the_context_part_does_not_read_returns_the_same_state():
     ctx = measured_mod.context_start()
     for entry_type in (
         "step/completed",
-        "request/configured",
         "tool/started",
     ):
         assert measured_mod.context_apply(ctx, _entry(1, entry_type, {"turn": 1})) is ctx
     # A resume is the same unit: nothing to change either.
     assert measured_mod.context_apply(ctx, _entry(2, "session/opened", {"resumed": True})) is ctx
+    # A configuration with no window states nothing to keep.
+    zero = _entry(3, "request/configured", {"turn": 1, "context_window": 0})
+    assert measured_mod.context_apply(ctx, zero) is ctx
+
+
+def test_the_configured_window_is_the_newest_stated_in_this_unit():
+    ctx = measured_mod.context_start()
+    for seq, window in enumerate((200_000, 0, 1_000_000, 0), start=1):
+        ctx = measured_mod.context_apply(
+            ctx, _entry(seq, "request/configured", {"turn": 1, "context_window": window})
+        )
+    assert ctx["conf_window"] == 1_000_000
+    ctx = measured_mod.context_apply(ctx, _entry(9, "session/opened", {"resumed": True}))
+    assert ctx["conf_window"] == 0
 
 
 def test_apply_never_edits_the_state_it_was_given():
@@ -573,16 +679,37 @@ CACHE_MEMBER_CEILING = 995_342
 
 
 def worst_case_context_bytes() -> int:
+    """Bytes the context state holds at its largest (:func:`worst_case_context`)."""
+    return _deep_bytes(worst_case_context())
+
+
+def worst_case_context() -> dict[str, Any]:
     """The context state at its largest: every number distinct at the cap, every string
-    at ``TEXT_LIMIT``. Built by hand because the shape is fixed: there is nothing a
-    longer session could add."""
+    at the longest a kept name can be, and every one of the 31 rows full: its
+    :data:`BLOCKS_PER_TURN` blocks by distinct names and a whole engine measurement.
+    Built by hand because the shape is fixed: there is nothing a longer session could
+    add."""
     from kiro_crew.crew_log.projection_values import TEXT_LIMIT
     from kiro_crew.engine_context import MAX_COUNT
 
-    n = iter(range(10_000))
+    n = iter(range(1_000_000))
 
     def big() -> int:
         return MAX_COUNT - next(n)
+
+    def name() -> str:
+        # The longest name a row keeps: one under ``TEXT_LIMIT`` (see ``_keyable``).
+        return f"{next(n):08d}".ljust(TEXT_LIMIT - 1, "b")
+
+    def blocks() -> list[list[Any]]:
+        return [[name(), big()] for _ in range(measured_mod.BLOCKS_PER_TURN)]
+
+    def row() -> list[Any]:
+        return [
+            *(big() for _ in range(measured_mod.ROW_FIELDS)),
+            blocks(),
+            [big() for _ in range(measured_mod.MEASURED_FIELDS)],
+        ]
 
     ctx = measured_mod.context_start()
     ctx.update(
@@ -593,20 +720,85 @@ def worst_case_context_bytes() -> int:
         }
     )
     ctx["ours"] = [big() for _ in range(5)]
+    ctx["ours_read"] = [big() for _ in range(5)]
     ctx["turn_ours"] = [big() for _ in range(5)]
+    ctx["turn_blocks"] = blocks()
+    # The ordinal memo full: CONTEXT_ORDINAL_MEMO_LIMIT turn numbers at the cap's width.
+    ctx["turn_memo"] = "," + "".join(
+        f"{MAX_COUNT - i}," for i in range(measured_mod.CONTEXT_ORDINAL_MEMO_LIMIT)
+    )
     ctx["turn_phase"] = "p" * TEXT_LIMIT
     ctx["engine_id"] = "i" * TEXT_LIMIT
     ctx["engine"] = [big() for _ in range(measured_mod.MEASURED_FIELDS)]
-    ctx["trend"] = [[big() for _ in range(measured_mod.ROW_FIELDS)] for _ in range(30)]
-    ctx["start"] = [big() for _ in range(measured_mod.ROW_FIELDS)]
+    ctx["trend"] = [row() for _ in range(measured_mod.TREND_TURNS)]
+    ctx["start"] = row()
+    ctx["peaks"] = [[big(), big(), big()] for _ in range(measured_mod.PEAK_READINGS)]
     ctx["rerun"] = True
-    return _deep_bytes(ctx)
+    # The newest turn measured, so the pushed value carries its whole engine view.
+    ctx["engine_unit"], ctx["engine_no"] = ctx["turn_unit"], ctx["turn_no"]
+    ctx["closed_unit"] = ctx["closed_no"] = 0
+    return ctx
 
 
-def test_the_worst_case_context_state_is_a_small_fixed_size():
+#: The context state's bound in bytes: 31 full rows, the newest turn's own blocks, a
+#: full ordinal memo and a full set of peak readings. Measured (928,582), then rounded
+#: up; the cache member ceiling above is the hard limit.
+CONTEXT_STATE_BOUND = 950_000
+
+
+def test_the_worst_case_context_state_is_bounded_under_the_cache_ceiling():
     measured = worst_case_context_bytes()
-    assert measured < 20_000, f"the context state measures {measured:,} bytes at its largest"
+    assert measured < CONTEXT_STATE_BOUND, f"the context state measures {measured:,} bytes"
     assert measured < CACHE_MEMBER_CEILING
+
+
+#: The pushed context value's bound in JSON bytes: the newest turn whole (64 blocks at
+#: the longest name, a full engine view), plus the chart's numbers for 30 ring rows and
+#: the start row. Measured (20,908), then rounded up. A real session pushes about 6 KB.
+CONTEXT_PUSH_BOUND = 22_000
+
+
+def test_the_worst_case_pushed_value_is_a_few_kb():
+    """Every row in the state is whole, but the pushed value carries only the newest
+    turn whole: a past turn is read on demand, so a push stays small."""
+    import json
+
+    view = measured_mod.context_render(worst_case_context())
+    pushed = len(json.dumps(view, separators=(",", ":")))
+    assert pushed < CONTEXT_PUSH_BOUND, f"the pushed context value is {pushed:,} bytes"
+    assert view["latest"]["engine"] is not None
+    assert len(view["latest"]["blocks"]) == measured_mod.BLOCKS_PER_TURN
+
+
+def test_the_pushed_value_carries_no_per_row_detail():
+    """MUTATION-SENSITIVE: a ring row is the chart's numbers only; the start row adds
+    the size its panel heads with; the newest turn alone is whole."""
+    _open()
+    _turn(1, 6_000, _real_profile(), phase=PHASE_SESSION_START)
+    for turn in (2, 3, 4):
+        _turn(turn, 500, _real_profile())
+    context = _usage()["context"]
+    assert [set(row) for row in context["trend"]] == [{"turn", "ours", "loop", "used"}] * 3
+    assert set(context["start"]) == {"turn", "ours", "loop", "used", "figure"}
+    assert context["start"]["figure"] == {"n": 59_333, "unit": "chars"}
+    assert context["latest"]["engine"]["total_chars"] == 59_333
+    assert context["latest"]["blocks"] == {USER_LABEL: 40, "lessons": 460}
+
+
+def test_a_kept_turn_reads_whole_and_one_that_left_the_ring_reads_as_none():
+    _open()
+    for turn in range(1, 36):
+        _turn(turn, 1_000 + turn, None, used=2_000 + turn)
+    assert [row["turn"] for row in _trace()["trend"]][0] == 6
+    # Turn 20 is kept: its own blocks and its own reading.
+    detail = _turn_read(20)
+    assert detail["turn"] == 20
+    assert detail["blocks"] == {USER_LABEL: 40, "lessons": 980}
+    assert detail["context_used"] == 2_020 and detail["loop_estimated"] is True
+    # Turn 5 left the ring; turn 99 never was.
+    assert usage_mod.context_turn_detail(SLOT, 5) is None
+    assert usage_mod.context_turn_detail(SLOT, 99) is None
+    assert usage_mod.context_turn_detail(SLOT, 0) is None
 
 
 def test_a_measurement_with_no_open_turn_attaches_nowhere():
@@ -671,9 +863,9 @@ def test_any_rewind_sequence_keeps_ordinals_unique_and_equal_to_one_through_turn
     fold("session/opened", {})
     count = 0  # turns in the conversation, as the user sees them
     expected = 0  # the fold's ordinal count, which an unknown rewind moves on
-    dense = True
+    dense = True  # every rewind here is within the memo's range
     for choice in steps:
-        known = 0 < choice <= count and choice > count - measured_mod.TREND_TURNS
+        known = 0 < choice <= count
         if choice == 0 or choice > count:
             count += 1
             expected += 1

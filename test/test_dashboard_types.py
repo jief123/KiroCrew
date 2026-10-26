@@ -114,7 +114,15 @@ _DRIVERS: dict[str, list[tuple[str, dict[str, Any]]]] = {
                 "sources": [{"kind": "lessons", "chars": 900}],
             },
         ),
-        ("turn/completed", {"turn": 1, "stop_reason": "end_turn"}),
+        # A reading on the start turn too, so its ``figure`` holds real values.
+        (
+            "turn/completed",
+            {
+                "turn": 1,
+                "stop_reason": "end_turn",
+                "context": {"used": 900, "window": 200_000},
+            },
+        ),
         (
             "context/composed",
             {
@@ -188,6 +196,20 @@ def _value_at(value: Any, path: str) -> Any:
             return None
         node = node[part]
     return node
+
+
+def _lookup(value: Any, path: str) -> tuple[bool, Any]:
+    """``(rendered, value)`` at dotted *path*. A walk that reaches a null object stops
+    there as rendered (a nullable parent holds no keys); one that finds a key missing
+    from an object is not rendered."""
+    node = value
+    for part in path.split("."):
+        if node is None:
+            return True, None
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
 
 
 def _by_name(folded_through: Any = None) -> dict[str, Any]:
@@ -497,10 +519,16 @@ class TestDeclaredNullables:
 
         checked: list[str] = []
         wrong: list[str] = []
+        absent: list[str] = []
         for key, node in sorted(dt._NULLABLE.items()):
             fold = key.partition(".")[0]
             for leaf_path, declared in _declared_leaves(key, node):
-                value = _value_at(driven[fold], leaf_path.partition(".")[2])
+                rendered, value = _lookup(driven[fold], leaf_path.partition(".")[2])
+                if not rendered:
+                    # Declared, and the populated render has no such key: a promise the
+                    # fold does not keep, which a null check alone would skip.
+                    absent.append(leaf_path)
+                    continue
                 if value is None:
                     continue
                 checked.append(leaf_path)
@@ -510,6 +538,7 @@ class TestDeclaredNullables:
                         f"{type(value).__name__} ({value!r})"
                     )
         assert wrong == [], "\n".join(wrong)
+        assert absent == [], "declared but never rendered:\n" + "\n".join(absent)
 
         # The five the driver must reach, so this case cannot pass by checking nothing.
         for required in (

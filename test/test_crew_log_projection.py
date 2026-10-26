@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+from typing import Any
 
 import pytest
 from crew_log_projection_helpers import (  # noqa: F401 -- fixtures are used by name
@@ -872,3 +873,63 @@ def test_approvals_counts_a_decision_with_no_request_before_it():
     value = crew_log.fold_approvals(_entries(handle))
     assert value["unmatched_decisions"] == 1
     assert value["by_decision"] == {"deny": 1}
+
+
+def _fold_context(steps: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """The context part after *steps*, folded through its own apply."""
+    from kiro_crew.crew_log.schema import Entry
+
+    ctx = crew_log.context_start()
+    for seq, (entry_type, data) in enumerate(steps, start=1):
+        entry = Entry(
+            type=entry_type, seq=seq, time=1_700_000_000_000 + seq, src=GATEWAY, data=data
+        )
+        ctx = crew_log.context_apply(ctx, entry)
+    return ctx
+
+
+def _turn_steps(number: int) -> list[tuple[str, dict[str, Any]]]:
+    sources = [{"kind": "your_message", "chars": 40}]
+    return [
+        ("context/composed", {"turn": number, "chars": 40, "sources": sources}),
+        ("turn/completed", {"turn": number, "stop_reason": "end_turn"}),
+    ]
+
+
+def test_usage_a_rewind_past_400_turns_keeps_the_turns_ordinal():
+    """MUTATION-SENSITIVE: a rewind deep into a long session reuses the turn's ordinal.
+
+    ``chat_rewind`` can re-run any user message in the slot's live list, which holds far
+    more than the chart's 30 rows. A rewind to turn 10 after 1,000 turns, numbered as
+    the dashboard numbers them (the durable row count, two apart), must read ordinal 10:
+    the turns after it are cut, and the next new turn is 11.
+    """
+    steps: list[tuple[str, dict[str, Any]]] = [("session/opened", {})]
+    for k in range(1, 1_001):
+        steps += _turn_steps(2 * k - 1)
+    steps += _turn_steps(2 * 10 - 1)
+    ctx = _fold_context(steps)
+    view = crew_log.context_render(ctx)
+    assert view["latest"]["turn"] == 10
+    assert view["turns"] == 10
+    # Every ring row (turns 971..1,000) came after it, so the ring holds turn 10 alone
+    # and counts the nine before it.
+    assert [row["turn"] for row in view["trend"]] == [10]
+    assert view["earlier"] == 9
+    # The next NEW turn takes the next ordinal.
+    view = crew_log.context_render(_fold_context(steps + _turn_steps(2 * 11 - 1)))
+    assert view["latest"]["turn"] == 11
+    # The same turn number in another unit is a different turn.
+    other = _fold_context(steps + [("session/opened", {})] + _turn_steps(19))
+    assert crew_log.context_render(other)["latest"]["turn"] == 11
+
+
+def test_usage_the_ordinal_memo_covers_the_rewindable_range():
+    """The memo bound is the slot's live message cap, the range a rewind can reach.
+
+    ``crew_log`` cannot import the dashboard, so the figure is restated there and pinned
+    here: if the live cap grows, a rewind could again reach a turn the memo evicted.
+    """
+    from kiro_crew.dashboard import state as dashboard_state
+
+    assert crew_log.CONTEXT_ORDINAL_MEMO_LIMIT == dashboard_state._MAX_SLOT_MESSAGES

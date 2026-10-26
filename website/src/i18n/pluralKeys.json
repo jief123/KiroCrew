@@ -297,5 +297,7 @@
   "pages.chatPage.jump_to_new",
   "pages.contextBreakdown.list_count",
   "pages.contextBreakdown.media_documents",
-  "pages.contextBreakdown.media_images"
+  "pages.contextBreakdown.media_images",
+  "pages.contextBreakdown.blocks_heading",
+  "pages.contextBreakdown.blocks_omitted"
 ]

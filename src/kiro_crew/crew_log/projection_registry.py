@@ -194,7 +194,8 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         "session/opened",
         "turn/completed",
         # A refused turn never ran, so it carries no cost and no occupancy -- it is
-        # here only so the ordinal counter sees it. A dispatch gate refusing a turn
+        # here only so the context part's turn counter sees it (``turns`` and the
+        # ordinal memo, ``projection_usage_measured``). A dispatch gate refusing a turn
         # (an oversized or blocked ``@prompt``, a superseded replay) is ordinary
         # operation, and the refusal is the turn's ONLY durable entry: it emits no
         # ``turn/completed`` and composes nothing. Without it the counter never
@@ -473,7 +474,14 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # Moved again for the fixed-size context part (five running sums, the newest
         # measurement, a 30-row trend ring whose rows carry their own ordinal): a
         # savepoint holding per-turn rows has none of it.
-        state_version=_FOLD_STATE_VERSION_BASE + 13,
+        # Moved again because each ring row now holds its turn whole (its blocks by
+        # name and its own engine measurement): a savepoint's shorter rows would be
+        # read past their end.
+        # Moved again for the ordinal memo (``turn_memo``) a rewind reads its ordinal
+        # from: a savepoint without it would give every rewound turn a new ordinal.
+        # Moved again for the dated readings the fullest-turn peak is taken from and
+        # the configured window (``peaks``, ``conf_window``): a savepoint has neither.
+        state_version=_FOLD_STATE_VERSION_BASE + 17,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.

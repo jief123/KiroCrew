@@ -55,7 +55,7 @@ export interface EngineTtft {
 /** The panel's own five categories (mirrors `Category` in ContextBreakdownPanel). */
 export type CrewCategory = 'message' | 'memory' | 'rules' | 'skills' | 'other'
 
-/** The newest turn, as the fold renders it on `ContextTrace.latest`. */
+/** One turn whole: the newest on `ContextTrace.latest`, or any kept turn's `detail`. */
 export interface LatestTurn {
   /** The turn's number in the whole session. */
   turn: number
@@ -67,9 +67,13 @@ export interface LatestTurn {
   loop_estimated: boolean
   engine: EngineMeasurement | null
   ttft_ms: EngineTtft | null
-  /** The newest occupancy reading, in TOKENS. */
+  /** The occupancy reading, in TOKENS: the newest one, or a past turn's own. */
   context_used: number
   context_window: number
+  /** This app's blocks the turn sent, by name, in characters. */
+  blocks?: Record<string, number>
+  /** Blocks past the per-turn cap, counted but not named. */
+  blocks_omitted?: number
 }
 
 const fmtN = (n: number): string => fmtNumber(Math.round(n))
@@ -166,6 +170,8 @@ export interface Row {
   estimated?: boolean
   /** Help shown from an info glyph after the label. */
   tip?: string
+  /** A short visible label beside the tip, so its kind reads before any hover. */
+  tipTag?: string
 }
 
 /**
@@ -262,8 +268,11 @@ export function breakdownOf(
   /** The session's agent, by the name the Agent Harness tab shows; empty when unknown. */
   harnessName = '',
   /** The session's harness id. On `kas` the engine measures every turn, so an unsplit
-   *  turn is one whose measurement has not arrived yet, never one to switch away from. */
-  harnessId = '',
+   *  turn is one whose measurement has not arrived yet, never one to switch away from.
+   *  null when it could not be read: no advice is given about a harness not known. */
+  harnessId: string | null = '',
+  /** A past turn: on `kas` it was not measured, rather than not measured yet. */
+  past = false,
 ): Breakdown {
   const message = Math.max(0, latest.ours.message ?? 0)
   const engine = latest.engine
@@ -299,8 +308,24 @@ export function breakdownOf(
       share: left.tokens / headline,
       color: UNSPLIT_COLOR,
       // Why this part has no split: not measured yet on Kiro Agent, and elsewhere
-      // where to get a split.
-      tip: harnessId === 'kas' ? i18nT('pages.contextBreakdown.rest_tip_not_yet') : restTip(harnessName),
+      // where to get a split. With the harness unread, the error above says why.
+      tip:
+        harnessId === null
+          ? undefined
+          : harnessId === 'kas'
+            ? past
+              ? i18nT('pages.contextBreakdown.rest_tip_not_measured')
+              : i18nT('pages.contextBreakdown.rest_tip_not_yet')
+            : restTip(harnessName),
+      // Named before any hover: a turn waiting on its measurement, or where to get one.
+      tipTag:
+        harnessId === null
+          ? undefined
+          : harnessId === 'kas'
+            ? past
+              ? i18nT('pages.contextBreakdown.rest_tag_past')
+              : i18nT('pages.contextBreakdown.rest_tag_pending')
+            : i18nT('pages.contextBreakdown.rest_tag_switch'),
     })
     return { mode: 'crew', rows, chars: null, filled, windowTokens, usedTokens: headline, overlap: left.over }
   }
@@ -490,11 +515,11 @@ function RowView({
   const kids = row.children ?? []
   const shut = row.collapsible && !open.has(row.id)
   const Chevron = shut ? ChevronRight : ChevronDown
-  const label = (
+  const swatch = row.plain ? <i className="w-2.5 shrink-0" aria-hidden="true" /> : <Swatch color={row.color} />
+  const words = (
     <>
-      {row.plain ? <i className="w-2.5 shrink-0" aria-hidden="true" /> : <Swatch color={row.color} />}
       {/* Narrow panel: the label wraps rather than being cut; wide: one line. */}
-      <span className="min-w-0 break-words @[26rem]/ctxrows:truncate" data-engine-label>
+      <span className="min-w-0 break-words @[26rem]/ctxrows:truncate" title={row.label} data-engine-label>
         {row.label}
       </span>
       {typeof row.count === 'number' && row.count > 0 ? (
@@ -505,6 +530,12 @@ function RowView({
       {row.collapsible && kids.length > 0 ? <Chevron size={14} className="lucide-inline shrink-0 text-muted" aria-hidden="true" /> : null}
     </>
   )
+  const label = (
+    <>
+      {swatch}
+      {words}
+    </>
+  )
   const line = (
     <div
       data-engine-row={row.id}
@@ -513,7 +544,7 @@ function RowView({
       {row.collapsible && kids.length > 0 ? (
         <button
           type="button"
-          className="flex items-center gap-2 min-w-[5rem] flex-1 bg-transparent border-0 p-0 appearance-none cursor-pointer text-inherit hover:text-text-strong rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+          className="flex items-center gap-2 min-w-[5rem] flex-1 text-left bg-transparent border-0 p-0 appearance-none cursor-pointer text-inherit hover:text-text-strong rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
           aria-expanded={!shut}
           onClick={() => toggle(row.id)}
         >
@@ -521,13 +552,23 @@ function RowView({
         </button>
       ) : (
         <span className="flex items-center gap-2 min-w-[5rem] flex-1">
-          {label}
-          {row.tip ? (
-            <span className="shrink-0 inline-flex" data-engine-tip>
-              {/* Above the glyph, starting at it: never over the row's own label. */}
-              <InfoTip text={row.tip} placement="top" />
-            </span>
-          ) : null}
+          {swatch}
+          {/* Narrow panel: the tip's tag and glyph go under the label rather than
+              squeezing it; the swatch stays beside the first line. */}
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+            {words}
+            {row.tip ? (
+              <span className="shrink-0 inline-flex items-center gap-1" data-engine-tip>
+                {row.tipTag ? (
+                  <span className="text-[11px] text-muted whitespace-nowrap" data-engine-tip-tag>
+                    {row.tipTag}
+                  </span>
+                ) : null}
+                {/* Above the glyph, starting at it: never over the row's own label. */}
+                <InfoTip text={row.tip} placement="top" />
+              </span>
+            ) : null}
+          </span>
         </span>
       )}
       <span className="flex items-center gap-2 shrink-0">
@@ -596,10 +637,17 @@ function mediaText(media: EngineMeasurement['media']): string | null {
   return parts.length > 0 ? fmtList(parts) : null
 }
 
+/** The turn's one size, as the headline states it: the request's characters when the
+ *  engine measured it, else the harness's tokens; null when neither was reported. */
+export function headlineFigure(breakdown: Breakdown): { n: number; unit: 'chars' | 'tokens' } | null {
+  if (breakdown.mode === 'measured') return breakdown.chars === null ? null : { n: breakdown.chars, unit: 'chars' }
+  return breakdown.usedTokens > 0 ? { n: breakdown.usedTokens, unit: 'tokens' } : null
+}
+
 /** The headline: characters and about how many tokens, or the harness's tokens. */
 export function Headline({ breakdown }: { breakdown: Breakdown }) {
   const measured = breakdown.mode === 'measured'
-  const big = measured ? breakdown.chars : breakdown.usedTokens > 0 ? breakdown.usedTokens : null
+  const big = headlineFigure(breakdown)?.n ?? null
   if (big === null) {
     return (
       <div className="mt-1 text-[15px] text-muted" data-testid="whole-total">

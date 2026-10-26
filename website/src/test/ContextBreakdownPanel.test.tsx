@@ -12,7 +12,7 @@
  *  - an un-recorded session degrades to a readable empty state, not a crash.
  */
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, within } from '@testing-library/react'
+import { render, screen, cleanup, within, fireEvent } from '@testing-library/react'
 
 import {
   ContextBreakdownPanel,
@@ -50,13 +50,9 @@ afterEach(cleanup)
 const SIDE_PANEL_IMPORT_TIMEOUT_MS = 45_000
 
 const turn = (over: Partial<ContextTurn> = {}): ContextTurn => ({
-  ts: '2026-08-04T00:00:00Z',
   phase: 'per_turn',
   blocks: { request_header: 1576, your_message: 6 },
   total_chars: 1582,
-  context_used: 2000,
-  context_window: 200000,
-  model: 'claude',
   ordinal: 0,
   ...over,
 })
@@ -168,11 +164,22 @@ const latestOf = (over: Partial<LatestTurn> = {}): LatestTurn => ({
   ...over,
 })
 
-const rowOf = (turn: number, loop = 1000): TrendRow => ({
-  turn,
-  ours: { message: 80, memory: 100 * turn, rules: 500, skills: 240, other: 140 },
-  loop,
-})
+const rowOf = (turn: number, loop = 1000): TrendRow => {
+  const ours = { message: 80, memory: 100 * turn, rules: 500, skills: 240, other: 140 }
+  return {
+    turn,
+    ours,
+    loop,
+    // Each kept turn carries its own whole view, as the trace handler builds it.
+    detail: latestOf({
+      turn,
+      phase: turn === 1 ? 'session_start' : 'per_turn',
+      ours,
+      context_used: 1000 * turn,
+      blocks: { your_message: 80, memory: 100 * turn, lessons: 500, skill_index: 240, surface: 140 },
+    }),
+  }
+}
 
 describe('ContextBreakdownPanel rendering, from the fold\'s bounded state', () => {
   const fiveTurns = () =>
@@ -189,8 +196,8 @@ describe('ContextBreakdownPanel rendering, from the fold\'s bounded state', () =
     const { container } = render(<ContextBreakdownPanel trace={fiveTurns()} chartWidth={600} />)
     const layers = Array.from(container.querySelectorAll('svg g[data-category]')).map(g => g.getAttribute('data-category'))
     expect(layers).toEqual([...CATEGORIES, 'loop'])
-    // The panel shows the newest turn only: the chart is a picture, not a picker.
-    expect(container.querySelectorAll('[data-turn]')).toHaveLength(0)
+    // One real button per plotted turn, so any kept turn can be picked.
+    expect(container.querySelectorAll('button[data-turn]:not([data-start-row])')).toHaveLength(5)
   })
 
   it('heads an unsplit newest turn with its own token total, not Kiro Crew blocks alone', () => {
@@ -230,7 +237,7 @@ describe('ContextBreakdownPanel rendering, from the fold\'s bounded state', () =
   it('lists the rest of an unsplit turn as one grey row in estimated tokens', () => {
     render(<ContextBreakdownPanel trace={fiveTurns()} chartWidth={600} />)
     const rest = document.querySelector('[data-engine-row="rest"]') as HTMLElement
-    expect(rest.textContent).toMatch(/^Rest of the context~\d/)
+    expect(rest.textContent).toMatch(/^Rest of the contextHow to split it~\d/)
     expect(screen.getByTestId('engine-caption').textContent).toBe('Figures marked ~ are estimates (characters / 4).')
   })
 
@@ -248,6 +255,282 @@ describe('ContextBreakdownPanel rendering, from the fold\'s bounded state', () =
   it('shows a loading state before the first payload', () => {
     const { container } = render(<ContextBreakdownPanel trace={undefined} isLoading />)
     expect(within(container).getByText(/Loading context breakdown/i)).toBeInTheDocument()
+  })
+})
+
+describe('picking a past turn shows that turn whole, as the newest one is shown', () => {
+  const sixTurns = () =>
+    trace({
+      latest: latestOf({ turn: 6, blocks: { your_message: 80, memory: 1200 } }),
+      trend: [2, 3, 4, 5, 6].map(n => rowOf(n)),
+      start: rowOf(1, 20000),
+      earlier: 1,
+      turn_count: 6,
+      chars_per_token: 4,
+    })
+
+  it('moves the detail to a clicked turn and back with the arrow keys', () => {
+    render(<ContextBreakdownPanel trace={sixTurns()} chartWidth={600} />)
+    const turn4 = screen.getByRole('button', { name: /^Turn 4:/ })
+    fireEvent.click(turn4)
+    const detail = () => screen.getByTestId('selected-turn-detail')
+    expect(within(detail()).getByText('Turn 4')).toBeInTheDocument()
+    expect(within(detail()).queryByText(/latest/)).toBeNull()
+    // Turn 4's own occupancy reading heads its panel.
+    expect(screen.getByTestId('whole-total').textContent).toBe('4,000')
+    expect(turn4).toHaveAttribute('aria-pressed', 'true')
+    // One tab stop: only the pressed button is tabbable.
+    expect(turn4).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('button', { name: /^Turn 5:/ })).toHaveAttribute('tabindex', '-1')
+    fireEvent.keyDown(turn4, { key: 'ArrowRight' })
+    expect(screen.getByRole('button', { name: /^Turn 5:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(detail()).getByText('Turn 5')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 5:/ }), { key: 'ArrowLeft' })
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 4:/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('button', { name: /^Turn 3:/ })).toHaveAttribute('aria-pressed', 'true')
+    // The newest column is the newest turn itself.
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 6:/ }))
+    expect(within(detail()).getByText(/Turn 6 · latest/)).toBeInTheDocument()
+  })
+
+  it('selecting the start row drives the detail like any other turn', () => {
+    const { container } = render(<ContextBreakdownPanel trace={sixTurns()} chartWidth={600} />)
+    const row = container.querySelector('[data-start-row]') as HTMLElement
+    expect(row).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    const detail = screen.getByTestId('selected-turn-detail')
+    expect(within(detail).getByText('Turn 1 · session start')).toBeInTheDocument()
+    // Only one turn is pressed at a time, across the row and the chart: the chart
+    // draws no marker for it.
+    const pressed = screen.getAllByRole('button', { pressed: true })
+    expect(pressed).toHaveLength(1)
+    expect(pressed[0]).toHaveAttribute('data-start-row')
+    expect(screen.queryByTestId('selected-turn-marker')).toBeNull()
+    // The keyboard still enters the chart at its newest turn.
+    expect(screen.getByRole('button', { name: /^Turn 6:/ })).toHaveAttribute('tabindex', '0')
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 6:/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('button', { name: /^Turn 5:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('selected-turn-marker')).toBeInTheDocument()
+  })
+
+  it('keeps the picked turn when a new turn shifts the full ring, and says so once it leaves', () => {
+    // Ring 2..31, the newest turn 31. Turn 12 is picked.
+    const ring = (from: number) => Array.from({ length: MAX_CHART_TURNS }, (_, i) => rowOf(from + i))
+    const traceAt = (from: number) =>
+      trace({ latest: latestOf({ turn: from + MAX_CHART_TURNS - 1 }), trend: ring(from), earlier: from - 1 })
+    const { rerender } = render(<ContextBreakdownPanel trace={traceAt(2)} chartWidth={600} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 12:/ }))
+    const detail = () => screen.getByTestId('selected-turn-detail')
+    expect(within(detail()).getByText('Turn 12')).toBeInTheDocument()
+    // Turn 32 completes: every column moves one left. The panel stays on turn 12.
+    rerender(<ContextBreakdownPanel trace={traceAt(3)} chartWidth={600} />)
+    expect(within(detail()).getByText('Turn 12')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Turn 12:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByTestId('picked-gone')).toBeNull()
+    // Ten more turns and turn 12 has left the ring: the newest turn, with a note.
+    rerender(<ContextBreakdownPanel trace={traceAt(13)} chartWidth={600} />)
+    expect(within(detail()).getByText('Turn 42 · latest')).toBeInTheDocument()
+    expect(screen.getByTestId('picked-gone').textContent).toBe('Turn 12 has left the chart, so the newest turn is shown.')
+  })
+
+  it('names the start row as a picker and marks it while its turn is shown', () => {
+    const { container } = render(<ContextBreakdownPanel trace={sixTurns()} chartWidth={600} />)
+    const row = screen.getByRole('button', { name: 'Show turn 1 (session start)' })
+    expect(row).toBe(container.querySelector('[data-start-row]'))
+    expect(within(row).getByTestId('start-row-state').textContent).toBe('Show')
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    expect(within(row).getByTestId('start-row-state').textContent).toBe('Shown above')
+    // The row states the same size the turn's own headline does.
+    expect(within(row).getByTestId('start-row-size').textContent).toBe(`${screen.getByTestId('whole-total').textContent} tokens`)
+  })
+
+  it('calls a session-start turn that is also the newest one thing in both places', () => {
+    const start = rowOf(1, 20000)
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 1, phase: 'session_start' }), trend: [], start })}
+        chartWidth={600}
+      />,
+    )
+    const detail = screen.getByTestId('selected-turn-detail')
+    expect(within(detail).getByText('Turn 1 · session start · latest')).toBeInTheDocument()
+    const row = screen.getByRole('button', { name: 'Show turn 1 (session start)' })
+    // It is the turn shown, so the row is marked, and its size is the headline's.
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    expect(within(row).getByTestId('start-row-size').textContent).toBe(`${screen.getByTestId('whole-total').textContent} tokens`)
+  })
+
+  it('keeps every turn reachable: one pointer surface maps a click to the nearest turn', () => {
+    const rows = Array.from({ length: MAX_CHART_TURNS }, (_, i) => rowOf(i + 2))
+    const { container } = render(
+      <ContextBreakdownPanel trace={trace({ latest: latestOf({ turn: 31 }), trend: rows })} chartWidth={264} />,
+    )
+    const surface = screen.getByTestId('turn-pointer-surface')
+    const plotWidth = 264 - 60 - 28
+    const columnWidth = plotWidth / (MAX_CHART_TURNS - 1)
+    // JSDOM reports the wrapper at x=0, so clientX is a plot-relative offset.
+    fireEvent.click(surface, { clientX: 60 + columnWidth * 10 })
+    expect(screen.getByRole('button', { name: /^Turn 12:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(container.querySelectorAll('button[data-turn]')).toHaveLength(MAX_CHART_TURNS)
+    expect(within(screen.getByTestId('selected-turn-detail')).getByText('Turn 12')).toBeInTheDocument()
+    // Arrow keys still walk the per-turn buttons.
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 12:/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('button', { name: /^Turn 11:/ })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('a past turn shows its own block names and its own engine rows', () => {
+    const measured = {
+      ...rowOf(3),
+      detail: latestOf({
+        turn: 3,
+        loop_estimated: false,
+        loop_chars: 50_000,
+        engine: {
+          total_chars: 52_000, model_calls: 1,
+          categories: { history: 1_900, steering: 30_000, skillsIndex: 20_100 },
+          percent: { history: 3.7, steering: 57.7, skillsIndex: 38.6 },
+          counts: { skillsIndex: 28 }, parts: {}, window: null, media: null,
+          history: { user: 1_900, assistant: 0, thinking: 0, compaction_summary: 0 },
+          unknown_chars: 0, compacted: false, schema_known: true, approximate: false,
+          crew_chars: 1_200, crew_split: { message: 80, memory: 300, rules: 500, skills: 240, other: 80 },
+          user_other_chars: 700, mismatch_chars: 0,
+        },
+        blocks: { your_message: 80, task_facts: 300, critical_rules: 500, loaded_skill: 240 },
+      }),
+    }
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 4, blocks: { your_message: 9 } }), trend: [rowOf(2), measured, rowOf(4)] })}
+        chartWidth={600}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 3:/ }))
+    const detail = screen.getByTestId('selected-turn-detail')
+    // The engine's own rows for turn 3, not the newest turn's.
+    expect(screen.getByTestId('whole-total').textContent).toBe('52,000')
+    expect(detail.querySelector('[data-engine-row="steering"]')!.textContent).toMatch(/30,000/)
+    expect(detail.querySelector('[data-engine-row="skillsIndex"]')!.textContent).toMatch(/\(28\)/)
+    // Its own blocks, by name.
+    fireEvent.click(within(detail).getByRole('button', { name: /blocks sent this turn/ }))
+    const names = Array.from(detail.querySelectorAll('[data-block]')).map(li => li.getAttribute('data-block'))
+    expect(names).toEqual(['critical_rules', 'task_facts', 'loaded_skill', 'your_message'])
+    expect(within(detail).getByText('Must-follow rules')).toBeInTheDocument()
+    expect(within(detail).getByText('Facts recalled for this task')).toBeInTheDocument()
+  })
+
+  it('counts every block sent in the heading, before grouping and past the list', () => {
+    // Two every-turn members list as one row, and still count as the two blocks sent.
+    const blocks = { your_message: 80, task_facts: 300, surface: 40, request_header: 60 }
+    const latest = latestOf({ blocks, blocks_omitted: 6 })
+    render(<ContextBreakdownPanel trace={trace({ latest, trend: [rowOf(2), rowOf(3)] })} chartWidth={600} />)
+    fireEvent.click(screen.getByRole('button', { name: '10 Kiro Crew blocks sent this turn' }))
+    const listed = Array.from(document.querySelectorAll('[data-block]')).map(li => li.getAttribute('data-block'))
+    expect(listed).toEqual(['task_facts', 'every_turn', 'your_message'])
+    expect(screen.getByTestId('blocks-omitted').textContent).toBe('6 more blocks not shown')
+  })
+
+  it("asks for a picked past turn the trace does not carry, and shows that turn's read", () => {
+    // As the gateway sends a row: the chart's numbers only.
+    const slim = (turn: number): TrendRow => {
+      const { detail: _detail, ...rest } = rowOf(turn)
+      return rest
+    }
+    const asked: Array<number | null> = []
+    const onPastTurn = (n: number | null) => asked.push(n)
+    const t = trace({ latest: latestOf({ turn: 4 }), trend: [slim(2), slim(3), slim(4)] })
+    const { rerender } = render(<ContextBreakdownPanel trace={t} chartWidth={600} onPastTurn={onPastTurn} />)
+    expect(asked.at(-1)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 3:/ }))
+    expect(asked.at(-1)).toBe(3)
+    // While it is read: the turn's name and a loading line, never the newest turn's panel.
+    expect(screen.getByTestId('past-turn-read').textContent).toMatch(/Turn 3/)
+    expect(screen.queryByTestId('selected-turn-detail')).toBeNull()
+    // The read lands: that turn's own panel.
+    const read = latestOf({ turn: 3, context_used: 3_000, blocks: { your_message: 80, lessons: 500 } })
+    rerender(<ContextBreakdownPanel trace={t} chartWidth={600} onPastTurn={onPastTurn} pastTurn={{ ordinal: 3, detail: read, loading: false, error: null }} />)
+    expect(screen.getByTestId('whole-total').textContent).toBe('3,000')
+    // A failed read says so in place.
+    rerender(<ContextBreakdownPanel trace={t} chartWidth={600} onPastTurn={onPastTurn} pastTurn={{ ordinal: 3, detail: null, loading: false, error: 'turn is not kept' }} />)
+    expect(within(screen.getByTestId('past-turn-read')).getByText('turn is not kept')).toBeInTheDocument()
+    // Back on the newest turn, nothing is asked for.
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 4:/ }))
+    expect(asked.at(-1)).toBeNull()
+  })
+
+  it('always offers the way back to a running newest turn that is not a column yet', () => {
+    // Turn 9 is still running: the chart stops at turn 8.
+    const t = trace({ latest: latestOf({ turn: 9 }), trend: [rowOf(6), rowOf(7), rowOf(8)] })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    const heading = () => screen.getByTestId('selected-turn-detail').querySelector('strong')!.textContent
+    expect(heading()).toBe('Turn 9 · latest')
+    expect(screen.queryByTestId('show-latest')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 7:/ }))
+    expect(heading()).toBe('Turn 7')
+    // The button names the newest turn and brings it back.
+    fireEvent.click(screen.getByTestId('show-latest'))
+    expect(heading()).toBe('Turn 9 · latest')
+    expect(screen.queryByTestId('show-latest')).toBeNull()
+    // So do Escape and Home, from a focused column.
+    for (const key of ['Escape', 'Home']) {
+      const column = screen.getByRole('button', { name: /^Turn 6:/ })
+      fireEvent.click(column)
+      expect(heading()).toBe('Turn 6')
+      fireEvent.keyDown(column, { key })
+      expect(heading()).toBe('Turn 9 · latest')
+    }
+  })
+
+  it('speaks tokens in the chart when the panel does, on a harness that never splits', () => {
+    const flat = (turn: number): TrendRow => ({ ...rowOf(turn, 0) })
+    const t = trace({ latest: latestOf({ turn: 4, context_used: 49_000 }), trend: [flat(2), flat(3), flat(4)] })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    expect(screen.getByTestId('chart-unit').textContent).toBe('Unit: tokens (estimated)')
+    // Turn 3 holds 1,260 characters of Kiro Crew blocks: about 315 tokens at 4 a token.
+    expect(screen.getByRole('button', { name: /^Turn 3:/ }).getAttribute('aria-label')).toBe('Turn 3: about 315 tokens')
+    cleanup()
+    // A measured ring stays in characters.
+    render(<ContextBreakdownPanel trace={trace({ latest: latestOf({ turn: 4 }), trend: [rowOf(2), rowOf(3), rowOf(4)] })} chartWidth={600} />)
+    expect(screen.getByTestId('chart-unit').textContent).toBe('Unit: characters')
+  })
+
+  it('fills each token column up to its own harness total with the rest band', () => {
+    // Turns 2 and 4 reported a total; turn 3 did not.
+    const flat = (turn: number, used: number): TrendRow => ({ ...rowOf(turn, 0), used })
+    const t = trace({
+      latest: latestOf({ turn: 4, context_used: 84_000 }),
+      trend: [flat(2, 80_000), flat(3, 0), flat(4, 84_000)],
+    })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    const aria = (n: number) => screen.getByRole('button', { name: new RegExp(`^Turn ${n}:`) }).getAttribute('aria-label')
+    expect(aria(4)).toBe('Turn 4: about 84,000 tokens')
+    expect(aria(2)).toBe('Turn 2: about 80,000 tokens')
+    // No total: Kiro Crew's own estimate only (1,260 characters, about 315 tokens).
+    expect(aria(3)).toBe('Turn 3: about 315 tokens')
+    expect(document.querySelector('[data-category="loop"]')).not.toBeNull()
+    expect(document.querySelector('[data-legend="loop"]')!.textContent).toBe('Rest of the context')
+    expect(screen.getByTestId('chart-no-total').textContent).toBe(' Turns with no reported total have no grey band.')
+    cleanup()
+    // Every turn reported a total: no caption about missing ones.
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 4, context_used: 84_000 }), trend: [flat(2, 80_000), flat(4, 84_000)] })}
+        chartWidth={600}
+      />,
+    )
+    expect(screen.queryByTestId('chart-no-total')).toBeNull()
+  })
+
+  it('heads the start row with the size the trace sends for it', () => {
+    const { detail: _detail, ...start } = rowOf(1)
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 4 }), trend: [rowOf(2), rowOf(3), rowOf(4)], start: { ...start, figure: { n: 85_312, unit: 'tokens' } } })}
+        chartWidth={600}
+      />,
+    )
+    expect(screen.getByTestId('start-row-size').textContent).toBe('85,312 tokens')
   })
 })
 

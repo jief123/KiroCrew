@@ -1195,7 +1195,7 @@ import nothing back, so there is no cycle to dodge).
 slot's `usage` PROJECTION rather than the shards. The fold's context part is one
 fixed-size state that does not grow with the session (`projection_usage_measured`):
 it never reads the log back, an entry that does not concern it returns the same
-state object, and its worst case is under 20 KB whatever the turn count. The trace
+state object, and its worst case is bounded whatever the turn count: 31 full rows (the ring plus the start row), about 894 KB in memory, under the slot-fold cache's 995,342-byte member ceiling. What it renders, and so pushes, is slim: the newest turn whole and the chart's numbers for every other row, about 6 KB on a real session and at most about 20 KB. A past turn's whole panel is a separate read (below). The trace
 returns what that state renders:
 
 - `latest` -- the newest turn's one breakdown: Crew's five running sums (`ours`:
@@ -1213,19 +1213,34 @@ returns what that state renders:
   `loop_chars` is the occupancy reading at `chars_per_token` less Crew's sums, with
   `loop_estimated` set.
 - `trend` -- the newest 30 turns (`TREND_TURNS`, the panel's `MAX_CHART_TURNS`),
-  oldest first, each with its own `turn` ordinal, Crew's five sums and the agent
-  loop's part (`loop`, measured turns only: the chart shows no estimate). Each ring
+  oldest first, each as the chart's numbers only: its own `turn` ordinal, Crew's five sums, the agent
+  loop's part (`loop`, measured turns only: the chart shows no estimate) and the turn's own occupancy reading in tokens (`used`, 0 with none). The state keeps, per row, what that turn's own panel needs: its Kiro Crew blocks by name (at most `BLOCKS_PER_TURN`, 64, the composer's own most; a name under `TEXT_LIMIT`; the rest counted in `blocks_omitted`), a copy of its engine measurement (all 14 categories, the history split, list counts, the toolIO, workspace and memory splits, window, media and time to first output), and its own occupancy reading. `GET /api/telemetry/context-trace?slot=<key>&turn=<ordinal>` (`usage.context_turn_detail`, `projection_usage_measured.context_turn`) serves one kept row as a whole-turn view in `latest`'s shape (`turn_detail`), read from the in-memory fold state through `read_slot_state`, never from the log: `400 turn_invalid` unless `turn` is a positive ASCII integer, `404 turn_not_kept` once the turn has left the ring, and the same dashboard-only gate and app-caller 404 as the trace. The panel reads it when a past turn is picked and caches it by slot, ordinal and that row's own numbers in the trace (`rowVersion`: Crew's sums, `loop`, `used`, `figure`), which change only when the turn is sent again, so a new turn elsewhere re-reads nothing; while a changed row is re-read, the previous read of the same ordinal stays on screen, disclosures open. Each ring
   row stores the ordinal it was closed at, so a slot with several session starts
-  labels every row correctly. A turn sent again (a retry, a regenerate, an edit-resend of an earlier message) keeps its ordinal, and every row from that ordinal on (ring and start row) is dropped because the conversation was cut back to it, so no two rows carry one number and `turn_count` is the real count. The ordinal is read from the turn's own row (the ring and the start row are the bounded turn-number-to-ordinal map), never computed from turn numbers, which count durable transcript rows; a turn whose row has left the ring takes a new ordinal, cuts nothing and keeps the start row; its previous attempt's measurement, time to first output and engine turn id are dropped until the new attempt reports its own.
+  labels every row correctly. A turn sent again (a retry, a regenerate, an edit-resend of an earlier message) keeps its ordinal, and every row from that ordinal on (ring and start row) is dropped because the conversation was cut back to it, so no two rows carry one number and `turn_count` is the real count. The ordinal is read from the ordinal memo (`turn_memo`: the current unit's turn numbers in ordinal order, bounded at `CONTEXT_ORDINAL_MEMO_LIMIT`, 10,000, the slot's live message cap, so it reaches any turn a rewind can), never computed from turn numbers, which count durable transcript rows; a rewind past the ring keeps its ordinal and cuts every ring row after it, and a refused turn (`turn/refused`) takes an ordinal too, since it holds its number in the conversation; its previous attempt's measurement, time to first output and engine turn id are dropped until the new attempt reports its own.
 - `start` -- the newest session-start turn's row, kept out of the ring because the
-  panel lists it above the chart.
+  panel lists it above the chart, with `figure`, the size its own panel heads with
+  (the engine's characters when measured, else its occupancy reading in tokens).
+- `revision` -- the fold revision the page was read at.
 - `earlier` -- exactly how many turns precede the ring's first row, and
   `turn_count`, the one turn counter.
 
-`turns`, `totals`, `injected_chars`, `user_chars` and `peak_context_used` (the
-newest occupancy reading) are built from that state for the Session Breakdown tree,
-which reads them per sub-agent. `days` is accepted and echoed as `window_days` but
-selects nothing: the state holds the newest of everything and no per-turn history.
+`turns`, `totals`, `injected_chars` and `user_chars` are built from that state for
+the Session Breakdown tree, which reads them per sub-agent; each of `turns` is what
+that kept turn sent, by block name, read from the state (`context_turn_blocks`), not
+from the pushed value: `{phase, blocks, total_chars, ordinal, first_start}`. The state
+keeps no per-turn time, model or reading for those rows, so they carry none, and the
+page has no `engine_unknown` map. The occupancy pair `peak_context_used` / `context_window` is the
+provider's own reading and the window it was measured against, both from the single
+`turn/completed` closed in the last `days` that is the FULLEST: the highest `used` /
+`window` ratio, which the tree turns into a fill ratio (`context_peak`). Fullest is
+the ratio and not the largest `used`, because a model switch moves the window: 90k of
+a 100k window is fuller than a later 200k of a 1M one. The comparison is integer-exact
+by cross-multiplication, `>=` keeps the newest of equally full turns, and a reading
+with no stated window is not a candidate. The state keeps the newest
+`PEAK_READINGS` (200) dated readings for it (`peaks`), across units, the reach the
+per-turn rows had; with none inside the span the pair is 0 and the newest non-zero
+window `request/configured` stated in this unit (`conf_window`). `days` selects
+nothing else and is echoed as `window_days`.
 Block sizes are characters and the occupancy pair is tokens. A session recorded with
 the crew log switched off reads empty -- this surface depends on that switch, which
 is the one thing it is not independent of. Billing is not on this payload:
@@ -1241,17 +1256,21 @@ never overwrites a parent's breakdown.
 
 **How the panel draws it.** The chat Activity panel's Context Breakdown tab
 (`website/src/pages/ContextBreakdownPanel.tsx`, `ContextEngineBreakdown.tsx`) shows the
-newest turn first, as one breakdown in the style of a window: a headline, a bar, and
+picked turn first (the newest by default), as one breakdown in the style of a window: a headline, a bar, and
 a flat list, zero rows hidden.
 
 - Measured turn (`latest.engine` present): the headline is the request's characters
   and, when the engine reported its window, about how many tokens that is by the
   window reading. The bar is the request at full width, each part at the engine's
-  own percent. Row 1 is always Kiro Crew (rules, memory, skills, other), a group that
+  own percent. Row 1 is always Kiro Crew (rules, memory, skills, session details: every
+  Crew block outside the other three, such as the date, workspace, user, folder,
+  replayed history and reply format), a group that
   can be folded and opens by default; then Your messages; then, largest first,
   Messages (the engine's history less Crew's blocks: replies, reasoning, summary and
-  other user text) and every other category the engine counted, each with its own
-  split where it sent one. A line under the bar gives the window share.
+  "Other text sent as you") and every other category the engine counted, each with its own
+  split where it sent one. Engine-side rows are named apart from Crew's own: "Engine
+  system prompt" (not Crew's rules) and "Skill list (engine)" (not Crew's skills).
+  A line under the bar gives the window share.
 - Turn not split (no `engine`): every row is in tokens at `chars_per_token`, marked
   `~`. Kiro Crew and Your messages are Crew's own sums; "Rest of the context" is the
   occupancy reading less that estimate, never below 0 (a warning says so when the
@@ -1259,20 +1278,33 @@ a flat list, zero rows hidden.
   on "Rest of the context" names the session's harness (the `backend` of
   `GET /api/chat/slots/{slot}/selection-capabilities`, the route the model picker
   reads) and the place
-  to get a split: Settings, the Agent Harness tab, the Kiro Agent choice. With no
-  occupancy reading, the rows stay in characters and nothing else is claimed.
+  to get a split: Settings, the Agent Harness tab, the Kiro Agent choice, and says
+  that new sessions then use Kiro Agent while this session keeps its current agent. On Kiro
+  Agent the tip says the row is estimated because the engine has not measured the
+  turn yet. A short tag beside the tip names which tip it is before any hover: "How
+  to split it" on another harness, "Not measured yet" on the newest Kiro Agent turn,
+  "Not measured" on a past one. When that route fails, its error is shown beside the trace's and the
+  tip and its tag are left off, since the harness is not known. With no occupancy reading, the
+  rows stay in characters and nothing else is claimed.
 
 Below it, the trend: the `start` row ("Turn N · session start", its characters),
 listed above the chart because its one-off size would pin a linear axis, then a
 stacked-area chart of the `trend` rows (x = turn ordinals as the fold stored them,
-y = characters), with a "Turns 1-N earlier" line from `earlier` that says when the
-start row is one of them. Its bands are Crew's five categories and "Rest of the
-context" (the measured `loop`), and the legend lists only the bands that are
-non-zero. X-axis labels are strided from the measured plot width
+y = characters; estimated tokens at `chars_per_token` instead when the panel is in
+tokens, that is the newest turn is not split, has an occupancy reading, and no row
+has a measured `loop`, so the chart and the rows above it share one unit), with a "Turns 1-N earlier" line from `earlier` that says when the
+start row is one of them. Every column is a real button (arrow keys move the pick, `aria-pressed` marks it; below 12px a column, one plot-wide surface maps a click to the nearest turn), and the start row is a button too: picking one shows that turn's `detail` exactly as the newest turn is shown, the engine's own rows when the engine measured it and the estimated view otherwise (on Kiro Agent, "Estimated. The engine didn't measure this turn."), plus a disclosure listing the Kiro Crew blocks that turn sent, by name. The newest column shows `latest` itself. While a past turn is picked, a "Show latest turn (N)" button goes back to `latest`, and so do Escape and Home on a column: the newest turn may still be running and so not be a column yet, and without it nothing could undo a pick. Its bands are Crew's five categories and "Rest of the
+context" (the measured `loop`; on a token chart, the row's own `used` less Crew's
+estimated tokens, so each column reaches that turn's harness total, and a turn with
+no reading gets no such band, which the caption then says), and the legend lists only
+the bands that are non-zero. The blocks disclosure's heading counts every block the
+turn sent: the positive entries before the every-turn members are grouped into one
+list row, plus `blocks_omitted`. X-axis labels are strided from the measured plot width
 (`axisLabelIndices`). Fills come from the `--ctx-cat-*` and `--ctx-eng-*` theme
 tokens (`website/src/styles/design-tokens.css`). Grey (`--ctx-eng-loop`) is the
 rest of the context in both the list and the chart, and the engine's own Other has
-a hue of its own, so the two never read as one thing. An empty trace reads "not
+a pink of its own (`--ctx-eng-other`) wherever it is drawn, so the two never read
+as one thing. An empty trace reads "not
 recorded while the crew log is off" when the payload's `recording` is false, naming
 the `.env` the gateway reads from the payload's `env_file` (sent only then), and the
 "nothing recorded yet" copy otherwise.

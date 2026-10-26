@@ -19,10 +19,14 @@ What it holds, and nothing else:
 3. ``used`` / ``used_window`` -- the newest occupancy reading ``turn/completed``
    carried, last-wins, which sizes the agent loop's part when the engine measured
    nothing (an estimate, see :data:`CHARS_PER_TOKEN`).
-4. ``trend`` -- a fixed ring of the newest :data:`TREND_TURNS` per-turn rows, each
-   exactly nine integers: the five sums at that turn, the agent loop's part, the
-   turn's own ordinal, and the unit and turn number it was composed under (so a
-   turn sent again finds its own row and keeps its ordinal). One row per turn, oldest dropped; the ring is full-size from the
+4. ``trend`` -- a fixed ring of the newest :data:`TREND_TURNS` per-turn rows. Each
+   row is the whole turn, so the panel can show any of them as it shows the newest:
+   :data:`ROW_FIELDS` integers (the five sums at that turn, the agent loop's part,
+   the turn's own ordinal, the unit and turn number it was composed under so a turn
+   sent again finds its own row, the turn's own occupancy reading, Crew's unscaled
+   total and how many blocks did not fit), then the turn's Kiro Crew blocks by name
+   (at most :data:`BLOCKS_PER_TURN`, a name under ``TEXT_LIMIT``), then a copy of
+   its engine measurement (``None`` when it sent none). One row per turn, oldest dropped; the ring is full-size from the
    start, so the state's shape is the same on turn 1 and on turn 10,000. ``start`` is
    the newest session-start turn's row, kept apart because the panel lists it above
    the chart.
@@ -36,9 +40,9 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from kiro_crew.context_blocks import PHASE_SESSION_START
+from kiro_crew.context_blocks import PHASE_PER_TURN, PHASE_SESSION_START
 from kiro_crew.crew_log import emit_turn as _emit_turn
-from kiro_crew.crew_log.projection_values import _as_int, _as_str
+from kiro_crew.crew_log.projection_values import _as_int, _as_str, _keyable
 from kiro_crew.crew_log.schema import Entry
 from kiro_crew.engine_context import (
     BREAKDOWN_SCHEMA,
@@ -79,16 +83,49 @@ _CAT_INDEX: Final[dict[str, int]] = {name: i for i, name in enumerate(CREW_CATEG
 
 #: Rows the trend ring keeps; equal to the panel's ``MAX_CHART_TURNS``.
 TREND_TURNS: Final[int] = 30
-#: Integers in one trend row: the five sums, the agent loop's part, the turn ordinal,
-#: and the unit and turn number the turn was composed under.
-ROW_FIELDS: Final[int] = len(CREW_CATEGORIES) + 4
+#: Integers at the head of one trend row: the five sums, the agent loop's part, the
+#: turn ordinal, the unit and turn number the turn was composed under, the turn's own
+#: occupancy reading and window, Crew's unscaled total, and the blocks left out.
+ROW_FIELDS: Final[int] = len(CREW_CATEGORIES) + 8
 _LOOP: Final[int] = len(CREW_CATEGORIES)
 _ORD: Final[int] = _LOOP + 1
 _UNIT: Final[int] = _ORD + 1
 _TURN: Final[int] = _UNIT + 1
+_USED: Final[int] = _TURN + 1
+_WINDOW: Final[int] = _USED + 1
+_RAW: Final[int] = _WINDOW + 1
+_OMITTED: Final[int] = _RAW + 1
+#: After the integers: the turn's blocks as ``[name, chars]`` pairs, then its engine
+#: measurement by ``_SLOTS`` (or ``None``).
+_BLOCKS: Final[int] = ROW_FIELDS
+_ROW_ENGINE: Final[int] = ROW_FIELDS + 1
+
+#: Turn numbers of the current unit the ordinal memo remembers, so a rewound,
+#: regenerated or edit-resent turn keeps its ordinal however far back it is. Sized to
+#: the REWINDABLE range: ``chat_rewind`` can re-run any user message still in the
+#: slot's live list, which holds up to ``dashboard.state._MAX_SLOT_MESSAGES`` (10,000)
+#: rows; ``test_usage_the_ordinal_memo_covers_the_rewindable_range`` pins the two equal.
+#: Held as ONE string of turn numbers (``turn_memo``), oldest first, so the bound costs
+#: about 90 KB at its worst; the oldest number evicts first.
+CONTEXT_ORDINAL_MEMO_LIMIT: Final[int] = 10_000
+
+#: Kiro Crew blocks one row keeps by name: the composer's own most per turn. A name
+#: past it, or one at ``TEXT_LIMIT`` (it cannot be told from a cut one), is counted in
+#: the row's omitted total, and its characters stay in the five sums.
+BLOCKS_PER_TURN: Final[int] = 64
+
+#: Occupancy readings kept for the fullest-turn peak, newest last, each
+#: ``[time_ms, used, window]``: the same reach the per-turn rows had, 200 turns, so a
+#: reader bounded to a span of days takes its peak from the readings inside it.
+PEAK_READINGS: Final[int] = 200
 
 _ZERO5: Final[tuple[int, ...]] = (0,) * len(CREW_CATEGORIES)
-_ZERO_ROW: Final[tuple[int, ...]] = (0,) * ROW_FIELDS
+
+
+def _zero_row() -> list[Any]:
+    """An empty row: its ordinal 0 means none."""
+    return [*(0,) * ROW_FIELDS, [], None]
+
 
 _HISTORY_KEYS: Final[tuple[str, ...]] = tuple(field for _wire, field in HISTORY_PARTS)
 _TTFT_KEYS: Final[tuple[str, ...]] = ("total_ms", "setup_ms", "model_ms")
@@ -136,6 +173,8 @@ CONTEXT_TYPES: Final[frozenset[str]] = frozenset(
         "context/measured",
         "turn/completed",
         "compaction/applied",
+        "turn/refused",
+        "request/configured",
     }
 )
 
@@ -155,6 +194,9 @@ def context_start() -> dict[str, Any]:
         "turn_no": 0,
         "turn_phase": "",
         "turn_ours": list(_ZERO5),
+        # The newest composed turn's blocks by name, and how many did not fit.
+        "turn_blocks": [],
+        "turn_omitted": 0,
         # The newest closed turn, and whether a turn was sent again since ``ours`` last
         # restarted (so the split may count an attempt the engine dropped).
         "closed_unit": 0,
@@ -165,6 +207,9 @@ def context_start() -> dict[str, Any]:
         # The newest composed turn's ordinal: ``turns`` for a new turn, and the
         # ordinal it already has when it is sent again (0 when that is not known).
         "turn_ord": 0,
+        # The current unit's turn numbers in ordinal order, ``,7,9,11,``: the last one
+        # holds ordinal ``turns``, each earlier one a step less (see ``_memo_ordinal``).
+        "turn_memo": ",",
         # The engine's ``compaction_summary`` as last measured, -1 before any.
         "summary": -1,
         # The newest measurement: its values by ``_SLOTS``, the turn it belongs to, and
@@ -176,14 +221,20 @@ def context_start() -> dict[str, Any]:
         # The newest occupancy reading, in TOKENS; -1 before any.
         "used": -1,
         "used_window": 0,
+        # The readings the peak is taken from (see ``PEAK_READINGS``), across units:
+        # only a reading with a stated window, the ones that have a fullness ratio.
+        "peaks": [],
+        # The newest non-zero window ``request/configured`` stated in this unit: the
+        # size a reader is told before any turn has reported a reading.
+        "conf_window": 0,
         # The trend ring, oldest first, always TREND_TURNS rows; ``trend_rows`` says how
         # many are real. Each row ends with its own turn ordinal.
-        "trend": [list(_ZERO_ROW) for _ in range(TREND_TURNS)],
+        "trend": [_zero_row() for _ in range(TREND_TURNS)],
         "trend_rows": 0,
         "trend_unit": 0,
         "trend_no": 0,
         # The newest session-start turn's row; its ordinal 0 means none.
-        "start": list(_ZERO_ROW),
+        "start": _zero_row(),
     }
 
 
@@ -199,6 +250,30 @@ def crew_split(sources: Any) -> list[int]:
             if cat is not None:
                 out[_CAT_INDEX[cat]] += max(0, _as_int(source.get("chars")))
     return [min(v, MAX_COUNT) for v in out]
+
+
+def crew_blocks(sources: Any, blocks: Any, omitted: int) -> tuple[list[list[Any]], int]:
+    """*blocks* (``[name, chars]`` pairs) with one composition's sources added by name.
+
+    A name already held grows; a new one is kept while the row holds fewer than
+    :data:`BLOCKS_PER_TURN`; anything else is counted in *omitted*. Returns new lists.
+    """
+    out = [[name, int(chars)] for name, chars in blocks]
+    index = {name: i for i, (name, _chars) in enumerate(out)}
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, dict) or not isinstance(source.get("kind"), str):
+                continue
+            name = _as_str(source.get("kind"))
+            chars = max(0, _as_int(source.get("chars")))
+            if name and _keyable(name) and name in index:
+                out[index[name]][1] = min(out[index[name]][1] + chars, MAX_COUNT)
+            elif name and _keyable(name) and len(out) < BLOCKS_PER_TURN:
+                index[name] = len(out)
+                out.append([name, min(chars, MAX_COUNT)])
+            else:
+                omitted = min(omitted + 1, MAX_COUNT)
+    return out, omitted
 
 
 def _add(a: Any, b: Any) -> list[int]:
@@ -256,35 +331,62 @@ def loop_chars(ctx: dict[str, Any]) -> tuple[int, bool]:
     return max(0, int(used * CHARS_PER_TOKEN) - ours), True
 
 
-def _trend_row(ctx: dict[str, Any]) -> list[int]:
-    # The rest of the context only where it was measured: the panel shows no
-    # estimate, so an unmeasured turn's row holds Crew's blocks alone.
+def _trend_row(ctx: dict[str, Any], used: int, window: int) -> list[Any]:
+    """The closing turn as one row: its numbers, its blocks, its own measurement."""
+    # The rest of the context only where it was measured: the chart shows no
+    # estimate, so an unmeasured turn's band holds Crew's blocks alone.
     loop, estimated = loop_chars(ctx)
+    engine = ctx["engine"]
+    own = (
+        engine
+        if ctx["engine_unit"] == ctx["turn_unit"]
+        and ctx["engine_no"] == ctx["turn_no"]
+        and any(v is not None for v in engine)
+        else None
+    )
     return [
         *crew_share(ctx),
         0 if estimated else min(loop, MAX_COUNT),
         int(ctx["turn_ord"]),
         int(ctx["turn_unit"]),
         int(ctx["turn_no"]),
+        used,
+        window,
+        min(sum(int(v) for v in ctx["ours"]), MAX_COUNT),
+        int(ctx["turn_omitted"]),
+        [list(pair) for pair in ctx["turn_blocks"]],
+        list(own) if own is not None else None,
     ]
 
 
-def _ordinal_of(ctx: dict[str, Any], unit: int, turn: int) -> int:
-    """The ordinal the turn *turn* of *unit* already has, newest row first; 0 if none.
+def _memo_ordinal(ctx: dict[str, Any], turn: int) -> int:
+    """The ordinal turn number *turn* of the current unit already has; 0 if none.
 
-    The ring rows and the start row are the turn-number-to-ordinal map: each row
-    carries the unit and turn number it was composed under. So the map is bounded by
-    the state itself, :data:`TREND_TURNS` rows plus the start row, and a turn evicts
-    with its ring row. A turn number is the conversation's durable row count, which
-    rises by two or more per turn, so an ordinal is only ever read from a row, never
-    computed from the distance between turn numbers.
+    A turn number is the conversation's durable row count, which rises by two or more
+    per turn, so an ordinal is never computed from turn numbers. It is read from the
+    memo: the numbers are listed in ordinal order and the newest holds ``turns``, so
+    a number's ordinal is ``turns`` less the numbers listed after it.
     """
-    rows = int(ctx["trend_rows"])
-    held = list(ctx["trend"])[TREND_TURNS - rows :] if rows else []
-    for row in reversed([ctx["start"], *held] if ctx["start"][_ORD] else held):
-        if int(row[_UNIT]) == unit and int(row[_TURN]) == turn:
-            return int(row[_ORD])
-    return 0
+    memo, needle = ctx["turn_memo"], f",{turn},"
+    found = memo.find(needle)
+    if found < 0:
+        return 0
+    return max(0, int(ctx["turns"]) - memo.count(",", found + len(needle)))
+
+
+def _memo_added(memo: str, turn: int) -> str:
+    """*memo* with *turn* as its newest number, its oldest dropped past the bound."""
+    memo = f"{memo}{turn},"
+    if memo.count(",") - 1 > CONTEXT_ORDINAL_MEMO_LIMIT:
+        memo = "," + memo[memo.index(",", 1) + 1 :]
+    return memo
+
+
+def _memo_cut(memo: str, turn: int) -> str:
+    """*memo* up to and including *turn*: a rewind drops the turns after it."""
+    needle = f",{turn},"
+    found = memo.find(needle)
+    return memo if found < 0 else memo[: found + len(needle)]
 
 
 def _truncated(ctx: dict[str, Any], ordinal: int) -> dict[str, Any]:
@@ -292,10 +394,10 @@ def _truncated(ctx: dict[str, Any], ordinal: int) -> dict[str, Any]:
     rows = int(ctx["trend_rows"])
     kept = [row for row in list(ctx["trend"])[TREND_TURNS - rows :] if int(row[_ORD]) < ordinal]
     out = dict(ctx)
-    out["trend"] = [list(_ZERO_ROW) for _ in range(TREND_TURNS - len(kept))] + kept
+    out["trend"] = [_zero_row() for _ in range(TREND_TURNS - len(kept))] + kept
     out["trend_rows"] = len(kept)
     if int(ctx["start"][_ORD]) >= ordinal:
-        out["start"] = list(_ZERO_ROW)
+        out["start"] = _zero_row()
     return out
 
 
@@ -310,17 +412,20 @@ def _composed(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
     if same and not closed:
         # Another composition of the turn still open: one turn, its sums grow.
         out["turn_ours"] = _add(ctx["turn_ours"], split)
+        out["turn_blocks"], out["turn_omitted"] = crew_blocks(
+            data.get("sources"), ctx["turn_blocks"], int(ctx["turn_omitted"])
+        )
     else:
         out["turn_ours"] = split
-        # The turn already has a row in this unit (a retry, a regenerate, an
-        # edit-resend): the conversation was cut back to it, so it keeps its ordinal
-        # and every row from that ordinal on goes. ``turns`` is then the real count.
-        # A turn sent again whose row has left the ring is not known here: it takes
-        # a new ordinal, so nothing older than the ring is cut, the start row stays,
-        # and ``turns`` never drops below the ring's oldest ordinal.
-        rewound = _ordinal_of(ctx, unit, turn)
+        out["turn_blocks"], out["turn_omitted"] = crew_blocks(data.get("sources"), [], 0)
+        # The turn number already has an ordinal in this unit (a retry, a regenerate,
+        # an edit-resend, a rewind however far back the memo reaches): the
+        # conversation was cut back to it, so it keeps its ordinal, every row from
+        # that ordinal on goes, and ``turns`` is then the real count.
+        rewound = _memo_ordinal(ctx, turn) if unit == ctx["turn_unit"] else 0
         if rewound:
             out = _truncated(out, rewound)
+            out["turn_memo"] = _memo_cut(ctx["turn_memo"], turn)
             out["turns"] = rewound
             out["turn_ord"] = rewound
             out["rerun"] = True
@@ -333,6 +438,7 @@ def _composed(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
         else:
             out["turns"] = ctx["turns"] + 1
             out["turn_ord"] = out["turns"]
+            out["turn_memo"] = _memo_added(ctx["turn_memo"], turn)
     out["turn_unit"], out["turn_no"] = unit, turn
     out["turn_phase"] = _as_str(data.get("phase"))
     return out
@@ -435,18 +541,30 @@ def _completed(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
     unit, turn = ctx["unit"], _as_int(data.get("turn"))
     out = dict(ctx)
     occupancy = data.get("context")
+    # The turn's OWN reading, for its row: a reading another turn carried describes
+    # no turn that ran, so a turn with none keeps 0.
+    own_used = own_window = 0
     if isinstance(occupancy, dict) and occupancy.get("used") is not None:
         out["used"] = min(max(0, _as_int(occupancy.get("used"))), MAX_COUNT)
         out["used_window"] = min(max(0, _as_int(occupancy.get("window"))), MAX_COUNT)
         out["ours_read"] = list(ctx["ours"])
+        own_used, own_window = out["used"], out["used_window"]
     out["closed_unit"], out["closed_no"] = unit, turn
     if _as_str(data.get("stop_reason")) not in _NORMAL_STOPS:
         # The prompt may have been rewound out of the engine before a retry; the sums
         # still count it, so the split is approximate until they next restart.
         out["rerun"] = True
     if ctx["turns"] == 0 or unit != ctx["turn_unit"] or turn != ctx["turn_no"]:
+        if turn > 0 and not _memo_ordinal(ctx, turn):
+            # A turn that ran without composing (a slash command) has no row, but it
+            # holds its number in the conversation, as a refused turn does.
+            out["turns"] = int(ctx["turns"]) + 1
+            out["turn_memo"] = _memo_added(ctx["turn_memo"], turn)
         return out
-    row = _trend_row(out)
+    if own_window > 0:
+        # A composed turn's own reading, dated, for the fullest-turn peak.
+        out["peaks"] = [*ctx["peaks"], [int(entry.time), own_used, own_window]][-PEAK_READINGS:]
+    row = _trend_row(out, own_used, own_window)
     ordinal = int(row[_ORD])
     if ordinal == 0:
         # A turn sent again whose row has left the ring: no ordinal is known that
@@ -457,7 +575,7 @@ def _completed(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
     # start composes per turn, a resent ring turn may compose as a start), so its
     # old row is looked up in BOTH places: one ordinal, one row, whatever the phase.
     if int(ctx["start"][_ORD]) == ordinal and not start_phase:
-        out["start"] = list(_ZERO_ROW)
+        out["start"] = _zero_row()
     rows = int(ctx["trend_rows"])
     trend = list(ctx["trend"])
     found = next(
@@ -467,7 +585,7 @@ def _completed(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
     if start_phase:
         if found is not None:
             # The ring holds real rows at its tail: drop this one and pad the head.
-            out["trend"] = [list(_ZERO_ROW), *trend[:found], *trend[found + 1 :]]
+            out["trend"] = [_zero_row(), *trend[:found], *trend[found + 1 :]]
             out["trend_rows"] = rows - 1
         out["start"] = row
         return out
@@ -498,6 +616,19 @@ def _compaction(ctx: dict[str, Any]) -> dict[str, Any]:
     return {**ctx, "ours": kept, "ours_read": list(_ZERO5), "rerun": False}
 
 
+def _refused(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
+    """A turn a dispatch gate refused: it never ran and has no row, but it holds its
+    number in the conversation, so it takes an ordinal and later turns count past it."""
+    turn = _as_int(entry.data.get("turn"))
+    if turn <= 0 or _memo_ordinal(ctx, turn):
+        return ctx
+    return {
+        **ctx,
+        "turns": int(ctx["turns"]) + 1,
+        "turn_memo": _memo_added(ctx["turn_memo"], turn),
+    }
+
+
 def context_apply(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
     """Fold one entry. Returns ``ctx`` itself when the entry does not concern it."""
     if entry.type == "context/composed":
@@ -508,19 +639,38 @@ def context_apply(ctx: dict[str, Any], entry: Entry) -> dict[str, Any]:
         return _completed(ctx, entry)
     if entry.type == "compaction/applied":
         return _compaction(ctx)
-    if entry.type == "session/opened" and entry.data.get("resumed") is not True:
+    if entry.type == "turn/refused":
+        return _refused(ctx, entry)
+    if entry.type == "request/configured":
+        # Newest NON-ZERO wins: a provider that reports no window writes 0, which
+        # would erase a size the session was told earlier and still runs under.
+        window = min(max(0, _as_int(entry.data.get("context_window"))), MAX_COUNT)
+        return {**ctx, "conf_window": window} if window > 0 else ctx
+    if entry.type == "session/opened" and entry.data.get("resumed") is True:
+        # A re-attachment is told its window again; until then it states none.
+        return {**ctx, "conf_window": 0} if ctx["conf_window"] else ctx
+    if entry.type == "session/opened":
         # A new unit is a new engine session: its context starts empty.
         return {
             **ctx,
             "unit": ctx["unit"] + 1,
             "ours": list(_ZERO5),
+            "turn_blocks": [],
+            "turn_omitted": 0,
             "ours_read": list(_ZERO5),
             "turn_ours": list(_ZERO5),
             "rerun": False,
             "summary": -1,
-            # The previous session's occupancy reading says nothing about this one.
+            # The previous session's occupancy reading and measurement say nothing
+            # about this one, and its turn numbers start again.
             "used": -1,
             "used_window": 0,
+            "conf_window": 0,
+            "engine": [None] * MEASURED_FIELDS,
+            "engine_unit": 0,
+            "engine_no": 0,
+            "engine_id": "",
+            "turn_memo": ",",
         }
     return ctx
 
@@ -554,67 +704,209 @@ def _named(values: Any) -> dict[str, int]:
     return {name: int(v) for name, v in zip(CREW_CATEGORIES, values)}
 
 
+def _engine_view(engine: Any, crew: int, share: Any) -> dict[str, Any] | None:
+    """A stored measurement as the panel reads it, or ``None`` with no breakdown.
+
+    *crew* is Crew's unscaled total and *share* its five sums as the engine holds
+    them, so the same view serves the newest turn and any row of the ring.
+    """
+    if not engine or not int(engine[_INDEX["flags"]] or 0) & FLAG_BREAKDOWN:
+        return None
+    user = _engine_value(engine, "hist:user")
+    flags = int(engine[_INDEX["flags"]] or 0)
+    return {
+        "total_chars": _engine_value(engine, "total_chars"),
+        "model_calls": _engine_value(engine, "model_calls"),
+        "categories": {
+            name: v
+            for name in KNOWN_CATEGORIES
+            if (v := _engine_value(engine, f"cat:{name}")) is not None
+        },
+        "history": {
+            name: v
+            for name in _HISTORY_KEYS
+            if (v := _engine_value(engine, f"hist:{name}")) is not None
+        },
+        # The engine's own share of each category, as a percent with one decimal.
+        "percent": {
+            name: v / 10
+            for name in KNOWN_CATEGORIES
+            if (v := _engine_value(engine, f"pct:{name}")) is not None
+        },
+        "counts": {
+            name: v
+            for name in LIST_CATEGORIES
+            if (v := _engine_value(engine, f"cnt:{name}")) is not None
+        },
+        "parts": _parts_view(engine),
+        "window": _window_view(engine),
+        "media": _media_view(engine),
+        "unknown_chars": _engine_value(engine, "unknown_chars") or 0,
+        "compacted": bool(flags & FLAG_COMPACTED),
+        "schema_known": not flags & FLAG_SCHEMA_UNKNOWN,
+        "approximate": bool(flags & FLAG_RERUN),
+        "crew_chars": sum(share),
+        "crew_split": _named(share),
+        "user_other_chars": max(0, user - crew) if user is not None else None,
+        "mismatch_chars": max(0, crew - user) if user is not None else 0,
+    }
+
+
+def _ttft_view(engine: Any) -> dict[str, int] | None:
+    if not engine:
+        return None
+    ttft = {
+        name: v for name in _TTFT_KEYS if (v := _engine_value(engine, f"ttft:{name}")) is not None
+    }
+    return ttft if "total_ms" in ttft else None
+
+
+def _row_render(row: Any) -> dict[str, Any]:
+    """One stored row, compact: the chart's numbers plus what the turn's own panel
+    needs, the measurement kept as its fixed list (see :func:`turn_detail`)."""
+    return {
+        "turn": int(row[_ORD]),
+        "ours": _named(row[:_LOOP]),
+        "loop": int(row[_LOOP]),
+        "used": int(row[_USED]),
+        "window": int(row[_WINDOW]),
+        "crew_raw": int(row[_RAW]),
+        "blocks_omitted": int(row[_OMITTED]),
+        "blocks": [[str(name), int(chars)] for name, chars in row[_BLOCKS]],
+        "engine": list(row[_ROW_ENGINE]) if row[_ROW_ENGINE] is not None else None,
+    }
+
+
+def turn_detail(item: dict[str, Any], phase: str) -> dict[str, Any]:
+    """A rendered row (:func:`_row_render`) as the panel's whole-turn view.
+
+    The same shape ``latest`` has, so a past turn shows exactly as the newest one:
+    the engine's own parts when it measured the turn, otherwise Crew's blocks and the
+    rest estimated from the turn's own occupancy reading.
+    """
+    raw_ours = item.get("ours")
+    ours: dict[str, Any] = raw_ours if isinstance(raw_ours, dict) else {}
+    share = tuple(int(ours.get(name, 0)) for name in CREW_CATEGORIES)
+    engine = item.get("engine")
+    if not (isinstance(engine, list) and len(engine) == MEASURED_FIELDS):
+        engine = None
+    view = _engine_view(engine, int(item.get("crew_raw") or sum(share)), share)
+    used = max(0, int(item.get("used") or 0))
+    if view is not None:
+        loop, estimated = max(0, int(view["total_chars"] or 0) - sum(share)), False
+    elif used > 0:
+        loop, estimated = max(0, int(used * CHARS_PER_TOKEN) - sum(share)), True
+    else:
+        loop, estimated = 0, True
+    raw_blocks = item.get("blocks")
+    blocks: list[Any] = raw_blocks if isinstance(raw_blocks, list) else []
+    return {
+        "turn": int(item.get("turn") or 0),
+        "phase": phase,
+        "ours": _named(share),
+        "loop_chars": loop,
+        "loop_estimated": estimated,
+        "engine": view,
+        "ttft_ms": _ttft_view(engine),
+        "context_used": used,
+        "context_window": max(0, int(item.get("window") or 0)),
+        "blocks": {str(name): int(chars) for name, chars in blocks},
+        "blocks_omitted": int(item.get("blocks_omitted") or 0),
+    }
+
+
+def _chart_row(row: Any) -> dict[str, Any]:
+    """One ring row as the pushed value carries it: the ordinal, the five sums, the
+    rest and the turn's own occupancy reading in tokens (0 with none), the numbers the
+    chart draws. The turn's whole panel is read on demand (:func:`context_turn`), so
+    the pushed value stays a few KB however full the rows."""
+    return {
+        "turn": int(row[_ORD]),
+        "ours": _named(row[:_LOOP]),
+        "loop": int(row[_LOOP]),
+        "used": int(row[_USED]),
+    }
+
+
+def _figure(row: Any) -> dict[str, Any] | None:
+    """The size a turn's own panel heads with: the engine's characters when it measured
+    the turn, else the turn's occupancy reading in tokens; None with neither."""
+    detail = turn_detail(_row_render(row), "")
+    engine = detail["engine"]
+    if engine is not None:
+        total = engine.get("total_chars")
+        if total is None:
+            total = sum(int(v) for v in (engine.get("categories") or {}).values()) + int(
+                engine.get("unknown_chars") or 0
+            )
+        return {"n": int(total), "unit": "chars"}
+    used = int(detail["context_used"])
+    return {"n": used, "unit": "tokens"} if used > 0 else None
+
+
+def context_turn(ctx: dict[str, Any], ordinal: int) -> dict[str, Any] | None:
+    """The kept turn with *ordinal* as its whole panel, in ``latest``'s shape; None when
+    no ring row and not the start row holds that ordinal (it left the ring)."""
+    if ordinal <= 0:
+        return None
+    start = ctx["start"]
+    if int(start[_ORD]) == ordinal:
+        return turn_detail(_row_render(start), PHASE_SESSION_START)
+    rows = int(ctx["trend_rows"])
+    for row in list(ctx["trend"])[TREND_TURNS - rows :] if rows else []:
+        if int(row[_ORD]) == ordinal:
+            return turn_detail(_row_render(row), PHASE_PER_TURN)
+    return None
+
+
+def context_peak(ctx: dict[str, Any], since_ms: int) -> tuple[int, int]:
+    """The fullest turn closed at or after *since_ms*, as ``(used, window)`` from that
+    one reading; ``(0, conf_window)`` when no reading falls inside.
+
+    Fullest is the highest ``used / window``, not the largest ``used``: a model switch
+    moves the window, so fewer tokens of a small window can be fuller than more of a
+    large one. Compared by cross-multiplication, integer-exact; ``>=`` keeps the newest
+    of equally full turns, the one describing the model now running.
+    """
+    peak_used = peak_window = 0
+    for when, used, window in ctx["peaks"]:
+        if int(when) < since_ms:
+            continue
+        if not peak_window or int(used) * peak_window >= peak_used * int(window):
+            peak_used, peak_window = int(used), int(window)
+    return (peak_used, peak_window) if peak_window else (0, int(ctx["conf_window"]))
+
+
+def context_turn_blocks(ctx: dict[str, Any]) -> list[tuple[int, str, dict[str, int]]]:
+    """What each kept turn sent, by block name: ``(ordinal, phase, blocks)``, the start
+    row first. Read by the Session Breakdown tree through the trace page, never pushed."""
+    out: list[tuple[int, str, dict[str, int]]] = []
+    start = ctx["start"]
+    rows = int(ctx["trend_rows"])
+    ring = list(ctx["trend"])[TREND_TURNS - rows :] if rows else []
+    kept = ([(start, PHASE_SESSION_START)] if int(start[_ORD]) else []) + [
+        (row, PHASE_PER_TURN) for row in ring
+    ]
+    for row, phase in kept:
+        blocks = {str(name): int(chars) for name, chars in row[_BLOCKS] if int(chars) > 0}
+        out.append((int(row[_ORD]), phase, blocks))
+    return out
+
+
 def context_render(ctx: dict[str, Any]) -> dict[str, Any]:
     """The context state as the panel reads it: the newest turn, the ring, the start row."""
     engine = ctx["engine"]
-    measured = measured_now(ctx)
     share = crew_share(ctx)
     loop, estimated = loop_chars(ctx)
-    engine_view: dict[str, Any] | None = None
-    if measured:
-        user = _engine_value(engine, "hist:user")
-        crew = sum(int(v) for v in ctx["ours"])
-        engine_view = {
-            "total_chars": _engine_value(engine, "total_chars"),
-            "model_calls": _engine_value(engine, "model_calls"),
-            "categories": {
-                name: v
-                for name in KNOWN_CATEGORIES
-                if (v := _engine_value(engine, f"cat:{name}")) is not None
-            },
-            "history": {
-                name: v
-                for name in _HISTORY_KEYS
-                if (v := _engine_value(engine, f"hist:{name}")) is not None
-            },
-            # The engine's own share of each category, as a percent with one decimal.
-            "percent": {
-                name: v / 10
-                for name in KNOWN_CATEGORIES
-                if (v := _engine_value(engine, f"pct:{name}")) is not None
-            },
-            "counts": {
-                name: v
-                for name in LIST_CATEGORIES
-                if (v := _engine_value(engine, f"cnt:{name}")) is not None
-            },
-            "parts": _parts_view(engine),
-            "window": _window_view(engine),
-            "media": _media_view(engine),
-            "unknown_chars": _engine_value(engine, "unknown_chars") or 0,
-            "compacted": bool(int(engine[_INDEX["flags"]] or 0) & FLAG_COMPACTED),
-            "schema_known": not int(engine[_INDEX["flags"]] or 0) & FLAG_SCHEMA_UNKNOWN,
-            "approximate": bool(int(engine[_INDEX["flags"]] or 0) & FLAG_RERUN),
-            "crew_chars": sum(share),
-            "crew_split": _named(share),
-            "user_other_chars": max(0, user - crew) if user is not None else None,
-            "mismatch_chars": max(0, crew - user) if user is not None else 0,
-        }
+    engine_view = (
+        _engine_view(engine, sum(int(v) for v in ctx["ours"]), share) if measured_now(ctx) else None
+    )
     ttft = None
     if engine and ctx["engine_unit"] == ctx["turn_unit"] and ctx["engine_no"] == ctx["turn_no"]:
-        ttft = {
-            name: v
-            for name in _TTFT_KEYS
-            if (v := _engine_value(engine, f"ttft:{name}")) is not None
-        }
-        if "total_ms" not in ttft:
-            ttft = None
+        ttft = _ttft_view(engine)
     rows = int(ctx["trend_rows"])
     ring = list(ctx["trend"])[TREND_TURNS - rows :] if rows else []
-    trend = [
-        {"turn": int(row[_ORD]), "ours": _named(row[:_LOOP]), "loop": int(row[_LOOP])}
-        for row in ring
-    ]
+    trend = [_chart_row(row) for row in ring]
     first = int(ring[0][_ORD]) if ring else 0
     start = ctx["start"]
     start_turn = int(start[_ORD])
@@ -633,6 +925,8 @@ def context_render(ctx: dict[str, Any]) -> dict[str, Any]:
                 "ttft_ms": ttft,
                 "context_used": max(0, int(ctx["used"])),
                 "context_window": int(ctx["used_window"]),
+                "blocks": {str(name): int(chars) for name, chars in ctx["turn_blocks"]},
+                "blocks_omitted": int(ctx["turn_omitted"]),
             }
             if ctx["turns"]
             else None
@@ -641,13 +935,5 @@ def context_render(ctx: dict[str, Any]) -> dict[str, Any]:
         # Turns before the ring's first row, exactly; the start row, if one of them, is
         # listed above the chart.
         "earlier": max(0, first - 1) if first else 0,
-        "start": (
-            {
-                "turn": start_turn,
-                "ours": _named(start[:_LOOP]),
-                "loop": int(start[_LOOP]),
-            }
-            if start_turn
-            else None
-        ),
+        "start": {**_chart_row(start), "figure": _figure(start)} if start_turn else None,
     }

@@ -131,6 +131,21 @@ def read_slot_projection(
     """
     if name == WORKERS_FOLD_NAME:
         return _read_workers(slot, cold=cold)
+    checkpoint, revision = read_slot_state(slot, name, also_slots=also_slots, cold=cold)
+    return projection_of(checkpoint, revision=revision)
+
+
+def read_slot_state(
+    slot: str, name: str, *, also_slots: Sequence[str] = (), cold: bool = True
+) -> "tuple[Checkpoint, int]":
+    """The fold state :func:`read_slot_projection` renders, with its revision.
+
+    The same warm in-memory cell, for a reader that needs more of the state than the
+    rendered value carries (the usage fold's past turns). Never the ``workers`` fold,
+    whose value merges several cells. ``cold`` is :func:`read_slot_projection`'s.
+    """
+    if name == WORKERS_FOLD_NAME:
+        raise ValueError("the workers fold has no single state; read its projection")
     units = list(_slot_units_for_fold(slot, name))
     known = set(units)
     for extra in also_slots:
@@ -138,8 +153,7 @@ def read_slot_projection(
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
-    return projection_of(checkpoint, revision=revision)
+    return fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
 
 
 #: Per ``(data home, crewmate slot)``, the part revisions the last ``workers`` read

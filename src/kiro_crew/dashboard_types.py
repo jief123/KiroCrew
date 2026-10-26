@@ -178,14 +178,35 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
             },
             "context_used": {"type": "number", "integer": True},
             "context_window": {"type": "number", "integer": True},
+            # The turn's Kiro Crew blocks by name, characters each, and how many did
+            # not fit the per-turn cap.
+            "blocks": {
+                "type": "object",
+                "opaque": True,
+                "keyed_by": "a Kiro Crew context block's name",
+            },
+            "blocks_omitted": {"type": "number", "integer": True},
         },
     },
+    # ``_chart_row`` plus ``figure``: the start row carries the chart's numbers only.
     "usage.context.start": {
         "type": "object",
         "properties": {
             "turn": {"type": "number", "integer": True},
             "ours": _CREW_SUMS,
             "loop": {"type": "number", "integer": True},
+            # The turn's own occupancy reading in tokens, 0 when it reported none.
+            "used": {"type": "number", "integer": True},
+            # The size the turn's own panel heads with; null with neither an engine
+            # measurement nor a reading.
+            "figure": {
+                "type": "object",
+                "nullable": True,
+                "properties": {
+                    "n": {"type": "number", "integer": True},
+                    "unit": {"type": "string"},
+                },
+            },
         },
     },
     # ``_timeline_render``: the first and last seq of the window, null while it is empty.

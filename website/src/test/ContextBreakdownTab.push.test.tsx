@@ -13,9 +13,11 @@ import { notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react
 
 const traceMock = vi.fn()
 const capsMock = vi.fn()
+const turnMock = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
     telemetryContextTrace: (slot: string) => traceMock(slot),
+    telemetryContextTurn: (slot: string, turn: number) => turnMock(slot, turn),
     chatSlotSelectionCapabilities: (slot: string) => capsMock(slot),
   },
 }))
@@ -39,13 +41,9 @@ function trace(turns: number): ContextTrace {
   return {
     slot: SLOT,
     turns: Array.from({ length: turns }, (_, i) => ({
-      ts: `2026-10-04T05:0${i}:00Z`,
       phase: 'turn',
       blocks: { your_message: 10 },
       total_chars: 10,
-      context_used: 0,
-      context_window: 0,
-      model: 'm',
       ordinal: i + 1,
     })),
     totals: { your_message: 10 * turns },
@@ -110,6 +108,7 @@ beforeEach(() => {
   traceMock.mockReset()
   capsMock.mockReset()
   capsMock.mockResolvedValue({ known: true, backend: 'kas' })
+  turnMock.mockReset()
   resetContextTraceRefresh()
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
 })
@@ -252,7 +251,7 @@ describe('Context tab: pushed frames replace the poll', () => {
     // Kiro Agent: the turn is not split yet, never "switch to Kiro Agent".
     const kasGlyph = screen.getByRole('button', { name: /more information/i })
     await act(async () => { kasGlyph.focus(); kasGlyph.dispatchEvent(new FocusEvent('focus')) })
-    expect(document.body.textContent).toMatch(/Not measured for this turn yet\./)
+    expect(document.body.textContent).toMatch(/Estimated\. The engine hasn't measured this turn yet\./)
     expect(document.body.textContent).not.toMatch(/pick Kiro Agent/)
     cleanup()
     qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
@@ -263,6 +262,87 @@ describe('Context tab: pushed frames replace the poll', () => {
     const glyph = screen.getByRole('button', { name: /more information/i })
     await act(async () => { glyph.focus(); glyph.dispatchEvent(new FocusEvent('focus')) })
     expect(document.body.textContent).toMatch(/Kiro CLI doesn't report/)
+  })
+
+  it('shows a failed harness read and gives no harness advice', async () => {
+    const t = trace(1)
+    traceMock.mockResolvedValue({ ...t, latest: { ...t.latest!, engine: null, context_used: 9_000, context_window: 1_000_000 } })
+    capsMock.mockRejectedValue(new Error('Service Unavailable (503)'))
+    mount()
+    await settle()
+    expect(screen.getByText('Service Unavailable (503)')).toBeTruthy()
+    // The rest row is still drawn, with no tip: neither "switch harness" nor "not yet".
+    expect(screen.getByText('Rest of the context')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /more information/i })).toBeNull()
+  })
+
+  it('reads a picked past turn from the turn route, once per version of its row', async () => {
+    const t = trace(3)
+    const ours = { message: 10, memory: 0, rules: 0, skills: 0, other: 0 }
+    // The gateway's rows: the chart's numbers only, no per-row detail.
+    const slim: ContextTrace = { ...t, revision: 4, trend: [1, 2, 3].map(turn => ({ turn, ours, loop: 100 })) }
+    traceMock.mockResolvedValue(slim)
+    turnMock.mockResolvedValue({
+      slot: SLOT,
+      revision: 4,
+      turn: { ...t.latest!, turn: 2, context_used: 7_777, context_window: 1_000_000, blocks: { your_message: 10 } },
+    })
+    mount()
+    await settle()
+    expect(turnMock).not.toHaveBeenCalled()
+    await act(async () => { screen.getByRole('button', { name: /^Turn 2:/ }).click() })
+    await settle()
+    expect(turnMock).toHaveBeenCalledWith(SLOT, 2)
+    expect(screen.getByTestId('whole-total').textContent).toBe('7,777')
+    // Picking it again while its row is unchanged answers from cache.
+    await act(async () => { screen.getByRole('button', { name: /^Turn 3:/ }).click() })
+    await act(async () => { screen.getByRole('button', { name: /^Turn 2:/ }).click() })
+    await settle()
+    expect(turnMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a picked past turn on screen, disclosures open, across new revisions', async () => {
+    const t = trace(3)
+    const ours = { message: 10, memory: 0, rules: 0, skills: 0, other: 0 }
+    const rows = (n: number, loop2 = 100) =>
+      Array.from({ length: n }, (_, i) => ({ turn: i + 1, ours, loop: i + 1 === 2 ? loop2 : 100, used: 0 }))
+    const read = (used: number) => ({
+      slot: SLOT,
+      revision: 4,
+      turn: { ...t.latest!, turn: 2, context_used: used, context_window: 1_000_000, blocks: { your_message: 10, lessons: 50 } },
+    })
+    traceMock.mockResolvedValue({ ...t, revision: 4, trend: rows(3) })
+    turnMock.mockResolvedValue(read(7_777))
+    mount()
+    await settle()
+    await act(async () => { screen.getByRole('button', { name: /^Turn 2:/ }).click() })
+    await settle()
+    await act(async () => { screen.getByRole('button', { name: /blocks sent this turn/ }).click() })
+    expect(document.querySelectorAll('[data-block]')).toHaveLength(2)
+
+    // A new turn elsewhere: turn 2's row is unchanged, so nothing is re-read or reset.
+    traceMock.mockResolvedValue({ ...t, revision: 5, trend: rows(4), latest: { ...t.latest!, turn: 4 } })
+    onUsageFrame(qc, frame(5))
+    await window()
+    expect(turnMock).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('whole-total').textContent).toBe('7,777')
+    expect(document.querySelectorAll('[data-block]')).toHaveLength(2)
+
+    // Turn 2 sent again: its row changed, so it is re-read, and the previous read stays
+    // on screen with its disclosure open until the new one lands.
+    const next = deferred<ReturnType<typeof read>>()
+    turnMock.mockReturnValue(next.promise)
+    traceMock.mockResolvedValue({ ...t, revision: 6, trend: rows(4, 300), latest: { ...t.latest!, turn: 4 } })
+    onUsageFrame(qc, frame(6))
+    await window()
+    expect(turnMock).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTestId('past-turn-read')).toBeNull()
+    expect(screen.getByTestId('whole-total').textContent).toBe('7,777')
+    expect(document.querySelectorAll('[data-block]')).toHaveLength(2)
+    await act(async () => { next.resolve(read(8_888)) })
+    await settle()
+    expect(screen.getByTestId('whole-total').textContent).toBe('8,888')
+    expect(document.querySelectorAll('[data-block]')).toHaveLength(2)
   })
 
   it('re-reads on every mount, even over a cached trace', async () => {

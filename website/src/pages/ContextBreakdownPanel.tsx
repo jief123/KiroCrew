@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from '../api/client'
@@ -8,24 +8,18 @@ import ErrorNotice from '../components/ErrorNotice'
 import { fmtNumber } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { SubagentActivity } from '../types'
-import { breakdownOf, Headline, MESSAGE_COLOR, TurnBreakdown, type CrewCategory, type LatestTurn } from './ContextEngineBreakdown'
+import { breakdownOf, Headline, headlineFigure, MESSAGE_COLOR, TurnBreakdown, type CrewCategory, type LatestTurn } from './ContextEngineBreakdown'
 import { SessionBreakdownTree } from './SessionBreakdownTree'
 import { CATEGORY_FILL } from './contextSourceColors'
 
 /**
- * One turn's injection record, as GET /api/telemetry/context-trace returns it.
- * `context_used` / `context_window` are in TOKENS; every block size is in CHARS.
- * The panel reads only `blocks` and `total_chars`; the other fields stay on the
- * wire for the recorder's other readers.
+ * What one kept turn sent, by block name, as GET /api/telemetry/context-trace returns
+ * it for the Session Breakdown tree. Every block size is in CHARS.
  */
 export interface ContextTurn {
-  ts: string
   phase: string
   blocks: Record<string, number>
   total_chars: number
-  context_used: number
-  context_window: number
-  model: string
   /** The turn's EXACT 1-based position in the whole session history, assigned by the
    *  backend fold before any truncation. Shown as the turn number directly: it stays
    *  true no matter how many older turns the fold dropped or this day view excluded,
@@ -41,6 +35,22 @@ export interface TrendRow {
   turn: number
   ours: Record<CrewCategory, number>
   loop: number
+  /** The turn's own occupancy reading in TOKENS, the harness total; 0 when it
+   *  reported none. Absent on an older gateway. */
+  used?: number
+  /** The turn whole, in `latest`'s shape. The gateway sends none: a picked past turn
+   *  is read on demand (`telemetryContextTurn`). A fixture trace may carry it. */
+  detail?: LatestTurn
+  /** On the start row: the size its own panel heads with. */
+  figure?: { n: number; unit: 'chars' | 'tokens' } | null
+}
+
+/** A past turn read on demand: GET /api/telemetry/context-trace?slot=..&turn=<ordinal>. */
+export interface PastTurnRead {
+  ordinal: number
+  detail: LatestTurn | null
+  loading: boolean
+  error: string | null
 }
 
 export interface ContextTrace {
@@ -59,8 +69,6 @@ export interface ContextTrace {
   recording?: boolean
   /** The `.env` file the gateway reads, sent only while recording is off. */
   env_file?: string
-  /** Engine categories this version does not know, by name. */
-  engine_unknown?: Record<string, { chars: number; turns: number }>
   /** The newest turn's one breakdown; null before any turn. Absent on an older gateway. */
   latest?: LatestTurn | null
   /** The newest 30 turns, oldest first. */
@@ -69,6 +77,8 @@ export interface ContextTrace {
   start?: TrendRow | null
   /** Turns before the first trend row. */
   earlier?: number
+  /** The fold revision the trace was read at. */
+  revision?: number
   turn_count?: number
   /** The characters-per-token ratio the fold's estimate used. */
   chars_per_token?: number | null
@@ -127,6 +137,36 @@ export function categorise(blocks: Record<string, number>): Record<Category, num
 
 /** The newest turns the chart draws; older ones are summarised as a count. */
 export const MAX_CHART_TURNS = 30
+
+// Stable label -> catalog-key map. Anything absent is humanised from its id at
+// render time, so the long tail of rare blocks needs no catalog entry.
+const BLOCK_KEY: Record<string, string> = {
+  your_message: 'pages.contextBreakdown.block_your_message',
+  memory: 'pages.contextBreakdown.block_memory',
+  agent_instructions: 'pages.contextBreakdown.block_agent_instructions',
+  lessons: 'pages.contextBreakdown.block_lessons',
+  semantic_memory: 'pages.contextBreakdown.block_semantic_memory',
+  episodic_memory: 'pages.contextBreakdown.block_episodic_memory',
+  task_facts: 'pages.contextBreakdown.block_task_facts',
+  skill_index: 'pages.contextBreakdown.block_skill_index',
+  skill_hint: 'pages.contextBreakdown.block_skill_hint',
+  loaded_skill: 'pages.contextBreakdown.block_loaded_skill',
+  critical_rules: 'pages.contextBreakdown.block_critical_rules',
+  response_preferences: 'pages.contextBreakdown.block_response_preferences',
+  [EVERY_TURN_KEY]: 'pages.contextBreakdown.block_every_turn',
+  unclassified: 'pages.contextBreakdown.block_unclassified',
+}
+
+/** Humanise a block id for the long tail: `hook_context` -> `Hook context`. */
+function humanise(label: string): string {
+  const spaced = label.replace(/_/g, ' ')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+export function blockName(label: string): string {
+  const key = BLOCK_KEY[label]
+  return key ? i18nT(key) : humanise(label)
+}
 
 const CATEGORY_KEY: Record<Category, string> = {
   message: 'pages.contextBreakdown.cat_message',
@@ -229,6 +269,8 @@ function StackedArea({
   layers = CATEGORIES,
   fills = CATEGORY_FILL,
   interactive = true,
+  tokens = false,
+  onLatest,
 }: {
   turns: ChartTurn[]
   selected: number
@@ -245,6 +287,10 @@ function StackedArea({
   fills?: Readonly<Record<string, string>>
   /** False draws the picture only: no turn buttons. */
   interactive?: boolean
+  /** The values are estimated tokens rather than characters. */
+  tokens?: boolean
+  /** Escape or Home on a column: back to the newest turn, which may not be a column. */
+  onLatest?: () => void
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
@@ -325,6 +371,9 @@ function StackedArea({
     } else if (e.key === 'ArrowRight') {
       e.preventDefault()
       move(from, 1)
+    } else if ((e.key === 'Escape' || e.key === 'Home') && onLatest) {
+      e.preventDefault()
+      onLatest()
     }
   }
 
@@ -433,7 +482,11 @@ function StackedArea({
             type="button"
             tabIndex={i === focusIdx ? 0 : -1}
             aria-pressed={i === selectedIdx}
-            aria-label={i18nT('pages.contextBreakdown.turn_button', { n: fmtN(t.displayN), chars: fmtN(t.total) })}
+            aria-label={
+              tokens
+                ? i18nT('pages.contextBreakdown.turn_button_tokens', { n: fmtN(t.displayN), tokens: fmtN(t.total) })
+                : i18nT('pages.contextBreakdown.turn_button', { n: fmtN(t.displayN), chars: fmtN(t.total) })
+            }
             data-turn={t.n}
             className={`absolute inset-y-0 appearance-none bg-transparent border-0 p-0 m-0 cursor-pointer rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${
               pointerSurface ? 'pointer-events-none' : 'hover:bg-[var(--card-hl)]'
@@ -449,18 +502,86 @@ function StackedArea({
 }
 
 /** The newest session-start turn, listed above the chart so its one-off size does
- *  not pin the y-axis. A row of facts: the panel shows the newest turn only. */
-function StartTurnRow({ row }: { row: TrendRow }) {
-  const total = Object.values(row.ours).reduce((a, b) => a + b, 0) + row.loop
+ *  not pin the y-axis. A picker like any chart column: it says what it does, shows the
+ *  same size the turn's own headline states, and marks itself when it is the turn shown. */
+function StartTurnRow({
+  row,
+  figure,
+  selected,
+  onSelect,
+}: {
+  row: TrendRow
+  figure: { n: number; unit: 'chars' | 'tokens' } | null
+  selected: boolean
+  onSelect: () => void
+}) {
+  const chars = Object.values(row.ours).reduce((a, b) => a + b, 0) + row.loop
   return (
-    <div
+    <button
+      type="button"
       data-start-row
-      className="w-full flex items-center justify-between gap-3 px-3 py-2 mb-2 rounded-lg border border-border text-left text-[13px] text-text"
+      data-turn={row.turn}
+      aria-pressed={selected}
+      aria-label={i18nT('pages.contextBreakdown.start_row_pick', { n: fmtN(row.turn) })}
+      onClick={onSelect}
+      className={`w-full flex items-center justify-between gap-3 px-3 py-2 mb-2 rounded-lg border-2 text-left text-[13px] text-text appearance-none cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${
+        selected ? 'border-[var(--accent)] bg-[var(--card-hl)]' : 'border-border bg-transparent hover:border-[var(--accent)] hover:bg-[var(--card-hl)]'
+      }`}
     >
-      <span>{i18nT('pages.contextBreakdown.start_row', { n: fmtN(row.turn) })}</span>
-      <span className="font-mono text-[12px] text-muted tabular-nums shrink-0">
-        {i18nT('pages.contextBreakdown.turn_button_chars', { chars: fmtN(total) })}
+      <span className="min-w-0">{i18nT('pages.contextBreakdown.start_row', { n: fmtN(row.turn) })}</span>
+      <span className="flex items-baseline gap-2 shrink-0">
+        <span className="font-mono text-[12px] text-muted tabular-nums" data-testid="start-row-size">
+          {figure
+            ? `${fmtN(figure.n)} ${figure.unit === 'chars' ? i18nT('pages.contextBreakdown.unit_chars') : i18nT('pages.contextBreakdown.unit_tokens')}`
+            : i18nT('pages.contextBreakdown.turn_button_chars', { chars: fmtN(chars) })}
+        </span>
+        <span
+          className={`text-[12px] font-semibold ${selected ? 'text-[var(--accent)]' : 'text-text-strong'}`}
+          data-testid="start-row-state"
+        >
+          {selected ? i18nT('pages.contextBreakdown.start_row_shown') : i18nT('pages.contextBreakdown.start_row_show')}
+        </span>
       </span>
+    </button>
+  )
+}
+
+/** The blocks this app sent on the turn, by name, the every-turn members as one. */
+function BlockList({ turn }: { turn: LatestTurn }) {
+  const [open, setOpen] = useState(false)
+  const grouped = Object.entries(groupBlocks(turn.blocks ?? {}))
+    .filter(([, chars]) => chars > 0)
+    .sort((a, b) => b[1] - a[1])
+  const omitted = turn.blocks_omitted ?? 0
+  if (grouped.length === 0 && omitted === 0) return null
+  // The heading counts every block sent, before the every-turn members are grouped
+  // into one list row, and the ones past the list's cap too.
+  const sent = Object.values(turn.blocks ?? {}).filter(chars => chars > 0).length + omitted
+  return (
+    <div className="mt-3 border-t border-border pt-2" data-testid="turn-blocks">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 bg-transparent border-0 p-0 appearance-none cursor-pointer text-[13px] text-text hover:text-text-strong rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+      >
+        {i18nT('pages.contextBreakdown.blocks_heading', { count: sent, n: fmtN(sent) })}
+      </button>
+      {open ? (
+        <ul className="m-0 mt-1 p-0 list-none">
+          {grouped.map(([label, chars]) => (
+            <li key={label} className="flex items-center justify-between gap-3 py-1 text-[12px] text-text" data-block={label}>
+              <span className="min-w-0 break-words">{blockName(label)}</span>
+              <span className="font-mono text-muted tabular-nums shrink-0">{fmtN(chars)}</span>
+            </li>
+          ))}
+          {omitted > 0 ? (
+            <li className="py-1 text-[12px] text-muted" data-testid="blocks-omitted">
+              {i18nT('pages.contextBreakdown.blocks_omitted', { count: omitted, n: fmtN(omitted) })}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
     </div>
   )
 }
@@ -473,14 +594,20 @@ export function ContextBreakdownPanel({
   isLoading,
   chartWidth,
   harness,
+  pastTurn,
+  onPastTurn,
 }: {
   trace: ContextTrace | null | undefined
   isLoading?: boolean
   /** The session's harness id ('kiro', 'kas', ...), as the selection-capabilities
-   *  route reports it; absent when unknown. */
-  harness?: string
+   *  route reports it; absent while unknown, null when that route failed. */
+  harness?: string | null
   /** Fixed chart width in px (capture harnesses and tests); measured when absent. */
   chartWidth?: number
+  /** The picked past turn, as read on demand. */
+  pastTurn?: PastTurnRead | null
+  /** Told which past turn is picked and must be read (null: none). */
+  onPastTurn?: (ordinal: number | null) => void
 }) {
   let body
   if (isLoading && !trace) {
@@ -502,7 +629,7 @@ export function ContextBreakdownPanel({
       </div>
     )
   } else {
-    body = <ContextBreakdownCard trace={trace} chartWidth={chartWidth} harness={harness} />
+    body = <ContextBreakdownCard trace={trace} chartWidth={chartWidth} harness={harness} pastTurn={pastTurn} onPastTurn={onPastTurn} />
   }
 
   return <div>{body}</div>
@@ -513,18 +640,47 @@ const TREND_LAYERS: readonly string[] = [...CATEGORIES, 'loop']
 // The user's own words take the bar's chat colour, so the two pictures agree.
 const TREND_FILL: Readonly<Record<string, string>> = { ...CATEGORY_FILL, message: MESSAGE_COLOR, loop: 'var(--ctx-eng-loop)' }
 
-const rowTotal = (row: TrendRow) => Object.values(row.ours).reduce((a, b) => a + b, 0) + row.loop
-
-function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTrace; chartWidth?: number; harness?: string }) {
+function ContextBreakdownCard({
+  trace,
+  chartWidth,
+  harness,
+  pastTurn,
+  onPastTurn,
+}: {
+  trace: ContextTrace
+  chartWidth?: number
+  harness?: string | null
+  pastTurn?: PastTurnRead | null
+  onPastTurn?: (ordinal: number | null) => void
+}) {
   const latest = trace.latest ?? null
-  const shown: ChartTurn[] = (trace.trend ?? []).map((row, i) => ({
-    n: i + 1,
-    displayN: row.turn,
-    total: rowTotal(row),
-    cats: { ...row.ours, loop: row.loop },
-    isStart: false,
-    isFirstStart: false,
-  }))
+  const rows = trace.trend ?? []
+  const charsPerToken = Math.max(0.1, trace.chars_per_token ?? 4)
+  // A harness that never splits its turns heads every panel in tokens; the chart then
+  // speaks tokens too, estimated at the composer's ratio, so one panel has one unit.
+  const tokenChart = !!latest && !latest.engine && latest.context_used > 0 && rows.every(r => r.loop <= 0)
+  const scale = (n: number) => (tokenChart ? Math.round(n / charsPerToken) : n)
+  const shown: ChartTurn[] = rows.map((row, i) => {
+    const cats: Record<string, number> = Object.fromEntries(
+      Object.entries({ ...row.ours, loop: row.loop }).map(([k, v]) => [k, scale(v)]),
+    )
+    if (tokenChart) {
+      // The harness total is the turn's own reading: the grey band fills the column
+      // up to it, so each column states the same size its panel heads with.
+      const crew = CATEGORIES.reduce((a, c) => a + (cats[c] ?? 0), 0)
+      cats.loop = Math.max(0, (row.used ?? 0) - crew)
+    }
+    return {
+      n: i + 1,
+      displayN: row.turn,
+      total: Object.values(cats).reduce((a, b) => a + b, 0),
+      cats,
+      isStart: false,
+      isFirstStart: false,
+    }
+  })
+  // A token column whose turn reported no total has no grey band; the caption says so.
+  const noTotal = tokenChart && rows.some(r => !((r.used ?? 0) > 0))
   const start = trace.start ?? null
   const firstShown = shown[0]
   // The fold counts exactly how many turns precede the ring; the start row, when it
@@ -539,13 +695,57 @@ function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTr
         : i18nT('pages.contextBreakdown.earlier_range', { first: fmtN(1), last: fmtN(lastEarlier) })
   const newestN = shown.length
 
-  const breakdown = latest ? breakdownOf(
-        latest,
-        [],
-        trace.chars_per_token ?? 4,
-        harness ? acpBackendName({ id: harness }) : '',
-        harness ?? '',
-      ) : null
+  // What is picked, by the turn's ORDINAL rather than its column: once the ring is full
+  // every closed turn shifts the columns, and a column index would silently move the
+  // panel to the next turn. null is the newest turn (`latest`, which may still be
+  // running and so not yet on the chart).
+  const [picked, setPicked] = useState<{ ordinal: number; start: boolean } | null>(null)
+  const pickedStart = picked?.start && start && start.turn === picked.ordinal ? start : null
+  const pickedIdx = picked && !picked.start ? rows.findIndex(r => r.turn === picked.ordinal) : -1
+  const pickedRow = pickedIdx >= 0 ? rows[pickedIdx] : null
+  // The picked turn left the ring (or the start row moved on): show the newest, and say so.
+  const gone = picked !== null && !pickedStart && !pickedRow ? picked.ordinal : null
+  // The newest turn shows `latest` itself, whichever place it was picked from, so one
+  // turn never reads two ways.
+  const shownRow = pickedStart ?? pickedRow
+  const pastRow = shownRow && shownRow.turn !== latest?.turn ? shownRow : null
+  // A past turn's whole panel is read on demand; a fixture row may carry it.
+  const fetchOrdinal = pastRow && !pastRow.detail ? pastRow.turn : null
+  useEffect(() => {
+    onPastTurn?.(fetchOrdinal)
+  }, [fetchOrdinal, onPastTurn])
+  const read = fetchOrdinal !== null && pastTurn?.ordinal === fetchOrdinal ? pastTurn : null
+  const turn: LatestTurn | null = pastRow ? pastRow.detail ?? read?.detail ?? null : latest
+  const isNewest = !pastRow
+  const newestIdx = newestN > 0 && shown[newestN - 1].displayN === latest?.turn ? newestN : 0
+  const selectedN = pickedStart ? 0 : pickedRow ? pickedIdx + 1 : start && start.turn === latest?.turn ? 0 : newestIdx
+  const startSelected = !!start && (pickedStart !== null || (isNewest && !pickedRow && start.turn === latest?.turn))
+  const selectedDisplayN = startSelected && start ? start.turn : selectedN > 0 ? shown[selectedN - 1].displayN : latest?.turn ?? 0
+
+  const breakdownFor = (t: LatestTurn, past: boolean) =>
+    breakdownOf(t, [], trace.chars_per_token ?? 4, harness ? acpBackendName({ id: harness }) : '', harness === null ? null : harness ?? '', past)
+  const breakdown = turn ? breakdownFor(turn, !isNewest) : null
+  // The start row states its turn's headline figure: the newest turn's own when it is
+  // the newest, else the one the trace sends with the row.
+  const startFigure = !start
+    ? null
+    : start.turn === latest?.turn && latest
+      ? headlineFigure(breakdownFor(latest, false))
+      : start.detail
+        ? headlineFigure(breakdownFor(start.detail, true))
+        : start.figure ?? null
+  // One name per turn: a session-start turn is called that wherever it is shown, and
+  // "latest" is added when it is also the newest.
+  const isStartTurn = !!turn && (turn.phase === 'session_start' || (!!start && start.turn === turn.turn))
+  const heading = !turn
+    ? ''
+    : isStartTurn
+      ? isNewest
+        ? i18nT('pages.contextBreakdown.turn_start_latest', { n: fmtN(turn.turn) })
+        : i18nT('pages.contextBreakdown.start_row', { n: fmtN(turn.turn) })
+      : isNewest
+        ? i18nT('pages.contextBreakdown.turn_latest', { n: fmtN(turn.turn) })
+        : i18nT('pages.contextBreakdown.turn_n', { n: fmtN(turn.turn) })
 
   return (
     <div className="border border-border bg-card rounded-xl overflow-hidden">
@@ -556,18 +756,60 @@ function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTr
         <p className="m-0 mt-1 text-[13px] text-muted">{i18nT('pages.contextBreakdown.subtitle')}</p>
       </div>
 
-      {latest && breakdown ? (
-        <div className="mx-4 mt-4" data-testid="selected-turn-detail">
+      {pastRow ? (
+        // The newest turn may still be running and so not be a column yet: this is
+        // always the way back to it.
+        <div className="mx-4 mt-3 -mb-1 flex justify-end">
+          <button
+            type="button"
+            data-testid="show-latest"
+            onClick={() => setPicked(null)}
+            className="text-[12px] font-semibold text-[var(--accent)] bg-transparent border border-border rounded-md px-2 py-0.5 cursor-pointer hover:bg-[var(--card-hl)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+          >
+            {latest ? i18nT('pages.contextBreakdown.show_latest_n', { n: fmtN(latest.turn) }) : i18nT('pages.contextBreakdown.show_latest')}
+          </button>
+        </div>
+      ) : null}
+
+      {pastRow && !turn ? (
+        <div className="mx-4 mt-4" data-testid="past-turn-read">
           <strong className="text-[15px] text-text-strong">
-            {i18nT('pages.contextBreakdown.turn_latest', { n: fmtN(latest.turn) })}
+            {pastRow === pickedStart
+              ? i18nT('pages.contextBreakdown.start_row', { n: fmtN(pastRow.turn) })
+              : i18nT('pages.contextBreakdown.turn_n', { n: fmtN(pastRow.turn) })}
           </strong>
+          {read?.error ? (
+            <ErrorNotice message={read.error} askAgent className="mt-2" />
+          ) : (
+            <p className="m-0 mt-1 text-[12px] text-muted">{i18nT('pages.contextBreakdown.loading')}</p>
+          )}
+        </div>
+      ) : null}
+
+      {turn && breakdown ? (
+        // Keyed by the turn, so a disclosure opened on one turn starts closed on the next.
+        <div className="mx-4 mt-4" data-testid="selected-turn-detail" key={`t${turn.turn}`}>
+          {gone !== null ? (
+            <p className="m-0 mb-1 text-[12px] text-muted" data-testid="picked-gone">
+              {i18nT('pages.contextBreakdown.picked_gone', { n: fmtN(gone) })}
+            </p>
+          ) : null}
+          <strong className="text-[15px] text-text-strong">{heading}</strong>
           <Headline breakdown={breakdown} />
-          <TurnBreakdown breakdown={breakdown} engine={latest.engine} ttft={latest.ttft_ms} charsPerToken={trace.chars_per_token} />
+          <TurnBreakdown breakdown={breakdown} engine={turn.engine} ttft={turn.ttft_ms} charsPerToken={trace.chars_per_token} />
+          <BlockList turn={turn} />
         </div>
       ) : null}
 
       <div className="px-4 pt-4 mt-4 border-t border-border" data-testid="trend">
-        {start ? <StartTurnRow row={start} /> : null}
+        {start ? (
+          <StartTurnRow
+            row={start}
+            figure={startFigure}
+            selected={startSelected}
+            onSelect={() => setPicked({ ordinal: start.turn, start: true })}
+          />
+        ) : null}
         {shown.length > 0 ? (
           <>
             <div className="flex items-center justify-between gap-3 mb-2">
@@ -576,7 +818,9 @@ function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTr
                   ? i18nT('pages.contextBreakdown.scope_turns', { count: shown.length })
                   : i18nT('pages.contextBreakdown.scope_all_turns', { count: shown.length })}
               </span>
-              <span className="text-[12px] text-muted">{i18nT('pages.contextBreakdown.scope_unit')}</span>
+              <span className="text-[12px] text-muted" data-testid="chart-unit">
+                {tokenChart ? i18nT('pages.contextBreakdown.scope_unit_tokens') : i18nT('pages.contextBreakdown.scope_unit')}
+              </span>
             </div>
             {lastEarlier > startsBefore ? (
               <p className="m-0 mb-2 text-[12px] text-muted" data-testid="earlier-turns">
@@ -585,17 +829,18 @@ function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTr
             ) : null}
             <StackedArea
               turns={shown}
-              selected={newestN}
-              selectedDisplayN={shown[newestN - 1].displayN}
-              onSelect={() => {}}
+              selected={selectedN}
+              selectedDisplayN={selectedDisplayN}
+              onSelect={n => setPicked({ ordinal: shown[n - 1].displayN, start: false })}
               width={chartWidth}
+              tokens={tokenChart}
+              onLatest={() => setPicked(null)}
               layers={TREND_LAYERS}
               fills={TREND_FILL}
-              interactive={false}
             />
             <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 text-[12px] text-muted">
               {TREND_LAYERS.filter(layer => shown.some(t => (t.cats[layer] ?? 0) > 0)).map(layer => (
-                <span key={layer} className="flex items-center gap-1.5">
+                <span key={layer} className="flex items-center gap-1.5" data-legend={layer}>
                   <i
                     className="w-2.5 h-2.5 rounded-[2px] shrink-0"
                     style={{ background: TREND_FILL[layer] }}
@@ -607,7 +852,10 @@ function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTr
                 </span>
               ))}
             </div>
-            <p className="m-0 mt-2 text-[12px] text-muted">{i18nT('pages.contextBreakdown.chart_note')}</p>
+            <p className="m-0 mt-2 text-[12px] text-muted">
+              {i18nT('pages.contextBreakdown.pick_hint')} {i18nT('pages.contextBreakdown.chart_note')}
+              {noTotal ? <span data-testid="chart-no-total"> {i18nT('pages.contextBreakdown.chart_no_total')}</span> : null}
+            </p>
           </>
         ) : null}
       </div>
@@ -615,6 +863,14 @@ function ContextBreakdownCard({ trace, chartWidth, harness }: { trace: ContextTr
       <div className="h-4" aria-hidden="true" />
     </div>
   )
+}
+
+/** A kept row's own version: its numbers as the trace sends them, or `gone` once no
+ *  row holds that ordinal (the read then answers 404 and must not be served stale). */
+function rowVersion(trace: ContextTrace | undefined, ordinal: number): string {
+  const row = trace?.start?.turn === ordinal ? trace.start : trace?.trend?.find(r => r.turn === ordinal)
+  if (!row) return 'gone'
+  return JSON.stringify([row.ours, row.loop, row.used ?? null, row.figure ?? null])
 }
 
 /** The panel as a per-session side-panel tab.
@@ -646,7 +902,33 @@ export function ContextBreakdownTab({ slot, subagents }: { slot: string; subagen
   })
   const backend = caps.data?.backend
   // Kiro CLI's runtime id is the empty string; the Agent Harness tab calls it `kiro`.
-  const harness = typeof backend === 'string' ? backend || ACP_BACKEND_KIRO : undefined
+  // A failed read is null, not unknown-yet: the panel then gives no harness advice.
+  const harness = typeof backend === 'string' ? backend || ACP_BACKEND_KIRO : caps.isError ? null : undefined
+  const capsError = caps.error ? (caps.error instanceof Error ? caps.error.message : String(caps.error)) : null
+  // A picked past turn's whole panel, read from the gateway's in-memory fold. Keyed by
+  // the kept row's own numbers rather than the fold revision: a closed row changes only
+  // when its turn is sent again, and then its sums or reading change too, so a new turn
+  // elsewhere answers from cache. While a changed row is re-read, the previous read of
+  // the same ordinal stays on screen, so the panel and its disclosures do not reset.
+  const [pastOrdinal, setPastOrdinal] = useState<number | null>(null)
+  const pastRowKey = pastOrdinal === null ? null : rowVersion(data, pastOrdinal)
+  const past = useQuery<{ turn: LatestTurn }>({
+    queryKey: ['context-turn', slot, pastOrdinal, pastRowKey],
+    queryFn: () => api.telemetryContextTurn(slot, pastOrdinal as number),
+    enabled: !!slot && pastOrdinal !== null && typeof api.telemetryContextTurn === 'function',
+    retry: false,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === slot && previousQuery?.queryKey[2] === pastOrdinal ? previous : undefined,
+  })
+  const pastTurn: PastTurnRead | null =
+    pastOrdinal === null
+      ? null
+      : {
+          ordinal: pastOrdinal,
+          detail: past.data?.turn ?? null,
+          loading: past.isLoading,
+          error: past.error ? (past.error instanceof Error ? past.error.message : String(past.error)) : null,
+        }
 
   return (
     <div className="h-full overflow-auto p-3">
@@ -654,7 +936,9 @@ export function ContextBreakdownTab({ slot, subagents }: { slot: string; subagen
       {/* A failed trace read otherwise rendered as an empty panel. Read-only
           side tab, so the hand-off loses nothing; the next pushed frame re-reads. */}
       <ErrorNotice message={error ? (error instanceof Error ? error.message : String(error)) : null} askAgent className="mb-3" />
-      <ContextBreakdownPanel trace={data} isLoading={isLoading} harness={harness} />
+      {/* Without the harness the panel cannot say where a split comes from. */}
+      <ErrorNotice message={capsError} askAgent className="mb-3" />
+      <ContextBreakdownPanel trace={data} isLoading={isLoading} harness={harness} pastTurn={pastTurn} onPastTurn={setPastOrdinal} />
     </div>
   )
 }
