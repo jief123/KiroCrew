@@ -156,7 +156,14 @@ class TestAnUnterminatedMarkerDoesNotEatItsLine:
         # Unchanged: with no closer anywhere the end anchor was never satisfiable.
         assert OPTIONS_RE_LINE.search("[OPTIONS: A | B then check arr") is None
 
-    def test_the_separator_tail_form_is_refused_rather_than_truncated(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_the_separator_tail_form_is_refused_rather_than_truncated"),
+            *named_cases("test_the_separator_tail_form_is_declined_rather_than_truncated"),
+        ],
+    )
+    def test_the_separator_tail_form_is_not_truncated(self):
         # Documented in ``constants.py`` as unresolved, because ``], `` genuinely
         # continues the list and no guard at the INTERNAL closer can tell it apart.
         # Counting from the other end decides it: the ``[`` of ``CHANGELOG[1]`` is

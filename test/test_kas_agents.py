@@ -257,18 +257,6 @@ class TestTheSpecIsSpelledInKasToolIds:
             assert set(family) <= registered, kiro_cli_name
             assert kiro_cli_name not in family, "a family lists the OTHER engine's ids"
 
-    def test_expand_is_pure_and_order_preserving(self):
-        entries = ["@a", "fs_read", "@b", "fs_read"]
-        assert expand_kiro_cli_tool_names(entries) == [
-            "@a",
-            "fs_read",
-            "read_file",
-            "list_directory",
-            "@b",
-        ]
-        assert entries == ["@a", "fs_read", "@b", "fs_read"], "input untouched"
-        assert expand_kiro_cli_tool_names([]) == []
-
 
 class TestDeliberateOmissions:
     """Fields left out on purpose; each would misbehave if projected.

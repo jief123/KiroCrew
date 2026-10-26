@@ -35,6 +35,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
@@ -319,7 +320,14 @@ class TestSandboxClassification:
 
 
 class TestCapabilities:
-    def test_kas_adds_the_kiro_settings_channel(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_kas_adds_the_kiro_settings_channel"),
+            *named_cases("test_the_settings_channel_is_still_open"),
+        ],
+    )
+    def test_the_kiro_settings_channel_is_announced(self):
         assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {}
 
     def test_kas_keeps_the_standard_top_level_declarations(self):

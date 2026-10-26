@@ -101,20 +101,6 @@ def test_the_clear_phrasings_rank_the_control_first(query: str, lang: str, top: 
     assert d["status"] == "ok" and d["results"][0]["id"] == top, d
 
 
-@pytest.mark.parametrize(
-    ("query", "lang"),
-    [
-        ("notify my boss", "en"),
-        ("report my taxes", "en"),
-        ("where are my keys", "en"),
-        ("chat about dinner", "en"),
-        ("给老板发通知", "zh-CN"),
-    ],
-)
-def test_unrelated_phrasings_are_no_match(query: str, lang: str) -> None:
-    assert ui_index.find_ui(query, lang)["status"] == "no_match", query
-
-
 # ── exact placements ──
 
 

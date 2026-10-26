@@ -373,13 +373,27 @@ class TestExplicitPickRefusal:
 class TestRejectionClassifier:
     """`_rejected_model_from_error` — powers the reactive retry."""
 
-    def test_matches_invalid_model_id_in_data(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_matches_invalid_model_id_in_data"),
+            *named_cases("test_matches_invalid_model_id"),
+        ],
+    )
+    def test_an_invalid_model_id_in_data_is_matched(self):
         assert (
             _rejected_model_from_error({"data": "Invalid model ID: claude-haiku-4.5"})
             == "claude-haiku-4.5"
         )
 
-    def test_matches_invalid_model_id_for_auto_in_message(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_matches_invalid_model_id_for_auto_in_message"),
+            *named_cases("test_matches_invalid_model_id_auto_in_message"),
+        ],
+    )
+    def test_an_invalid_auto_model_id_in_message_is_matched(self):
         assert _rejected_model_from_error({"message": "Invalid model ID: auto"}) == "auto"
 
     def test_matches_model_not_available_wording(self):
@@ -388,7 +402,14 @@ class TestRejectionClassifier:
             == "sonnet-x"
         )
 
-    def test_unrelated_error_returns_none(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_unrelated_error_returns_none"),
+            *named_cases("test_returns_none_for_unrelated_error"),
+        ],
+    )
+    def test_an_unrelated_error_is_not_matched(self):
         assert _rejected_model_from_error({"data": "ThrottlingException: slow down"}) is None
 
     def test_non_dict_returns_none(self):

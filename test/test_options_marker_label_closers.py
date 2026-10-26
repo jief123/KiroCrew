@@ -271,22 +271,6 @@ class TestAcceptedCosts:
         # here, and neither does this one.
         assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
 
-    def test_the_separator_tail_form_is_declined_rather_than_truncated(self):
-        # Not reachable by the matched-or-continues rule: ``], `` DOES continue the
-        # label list, by the very rule that makes ``[OPTIONS: Alpha ], Bravo]``
-        # legal, so no guard applied at the INTERNAL closer can tell the two apart.
-        # The terminator gate reaches it from the other end -- the ``[`` of
-        # ``CHANGELOG[1]`` is the opener whose partner would end the marker, so the
-        # bare form is refused and the line stays whole.
-        #
-        # Declining is the affordable outcome: truncating deleted ``, details in
-        # CHANGELOG[1]`` from the message and handed it back as the pill label
-        # ``Wait], details in CHANGELOG[1``.
-        text = "Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]"
-        assert OPTIONS_RE_LINE.search(text) is None
-        assert OPTIONS_RE_LINE.sub("", text) == text
-        assert split_options_trailer(text) == (text, [])
-
 
 class TestLookalikeBracketPairsParse:
     """A lookalike bracket PAIR parses like an ASCII ``[...]`` pair.
