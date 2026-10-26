@@ -20,8 +20,8 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
 Instance fields read: ``_agent_accepts_image``, ``_buffer``, ``_last_activity``, ``_liveness_oracle``,
-``_permission_gate_events``, ``_pid``, ``_process``, ``_session_id``, ``_steer_turn``,
-``_turn_lock``.
+``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
+``_session_id``, ``_steer_turn``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -136,6 +136,7 @@ def _process_message(self: AcpClient, msg: JsonRpcMessage, req_id: int) -> str:
         return "steer_answer"
 
     if msg.is_method(METHOD_REQUEST_PERMISSION):
+        self._note_asked_tool_call(msg)
         return "permission"
 
     if msg.is_method(METHOD_SESSION_UPDATE):
@@ -832,6 +833,7 @@ async def _dispatch_events(
     self._tool_call_diff_path.clear()
     # Reset the per-turn observed-tool-call bookkeeping (see __init__).
     self._observed_tool_calls.clear()
+    getattr(self, "_sel_settled_tool_calls", set()).clear()
     # Clear stale permission options so an aborted/cancelled request from
     # a prior turn cannot leak into this one (memory + correctness).
     self._permission_options.clear()
@@ -1104,6 +1106,8 @@ async def _dispatch_events(
                 # unless audit_source is set.
                 self._skill_reads.credit(tool_result_event)
                 await self._maybe_fire_post_tool_hooks(tool_result_event)
+                # A claude ``auto`` call that never asked gets its SEL row here.
+                await self._maybe_audit_unasked_tool_call(tool_result_event)
                 self._tripwire_spec_disabled_tool(tool_result_event)
                 yield tool_result_event
             # claude-agent-acp emits a separate `tool_call_update` carrying
@@ -1336,6 +1340,7 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
 
 async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) -> str:
     output: list[str] = []
+    getattr(self, "_sel_settled_tool_calls", set()).clear()
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
@@ -1424,6 +1429,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             if tool_result_event:
                 self._skill_reads.credit(tool_result_event)
                 await self._maybe_fire_post_tool_hooks(tool_result_event)
+                await self._maybe_audit_unasked_tool_call(tool_result_event)
                 self._tripwire_spec_disabled_tool(tool_result_event)
         elif action == "metadata":
             self._track_metadata(msg)

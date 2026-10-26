@@ -14,8 +14,9 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
 Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``,
-``_observed_tool_calls``, ``_session_id``, ``_session_key``,
-``_tool_call_harness_tool_name``, ``_tool_call_unclassified``, ``last_prompt_stats``.
+``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
+``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
+``_tool_call_unclassified``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
 from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
+    CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
@@ -185,6 +187,78 @@ async def _maybe_audit_tool_call(self: AcpClient, tool_event: "AcpEvent") -> Non
         )
     except Exception:
         logger.warning("ACP-layer SEL audit failed", exc_info=True)
+
+
+async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "AcpEvent") -> None:
+    """Write the SEL record for a claude ``auto`` call that never asked the host.
+
+    In ``auto`` mode Claude's own classifier approves a call, so the call sends no
+    ``session/request_permission``: no consumer gate runs and no consumer writes a
+    decision row for it. This writes that row once the call reaches a terminal
+    status, so every tool call of an ``auto`` session has an SEL record. A call that
+    did ask is skipped, because the consumer that answered it owns its record.
+
+    Scope: only a session whose seeded mode is ``auto``, and never an
+    ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
+    calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
+    call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
+    SEL failure or hang is logged and never breaks dispatch.
+    """
+    if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
+        return
+    if getattr(self, "_audit_source", None):
+        return
+    settled = getattr(self, "_sel_settled_tool_calls", None)
+    if settled is None:
+        return
+    status = tool_result_event.tool_status or ""
+    call_id = tool_result_event.tool_call_id or ""
+    if status not in TERMINAL_TOOL_STATUSES or not call_id:
+        return
+    if call_id in settled:
+        return
+    settled.add(call_id)
+    title, kind = self._observed_tool_calls.get(call_id, ("unknown", ""))
+    session_key = self._session_key or ""
+    agent = self._agent
+    tool_name = redact_text(title or "unknown")
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                lambda: sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent=agent,
+                    source="acp",
+                    tool_name=tool_name,
+                    tool_kind=kind or "",
+                    outcome="auto_approved" if status == "completed" else status,
+                    request_id=call_id,
+                    metadata={
+                        "reason": "claude_auto_mode",
+                        "decided_by": "claude_classifier",
+                        "tool_status": status,
+                    },
+                ),
+            ),
+            timeout=_SEL_AUDIT_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        logger.warning("ACP-layer SEL audit of an unasked claude call failed", exc_info=True)
+
+
+def _note_asked_tool_call(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Mark the tool call a ``session/request_permission`` names as asked.
+
+    The consumer that answers the request writes that call's SEL record, so
+    ``_maybe_audit_unasked_tool_call`` skips it.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    tool_call = params.get("toolCall")
+    call_id = tool_call.get("toolCallId") if isinstance(tool_call, dict) else None
+    settled = getattr(self, "_sel_settled_tool_calls", None)
+    if settled is not None and isinstance(call_id, str) and call_id:
+        settled.add(call_id)
 
 
 async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") -> None:

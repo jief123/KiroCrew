@@ -129,13 +129,17 @@ bytes it wrote; that seed carries deny rules translated from the spec's
 A session can OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
 resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
 `permissions.defaultMode`, which puts Claude's own classifier in charge of approving
-tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call` and
-writes no SEL record, exactly as a project allow rule does. Only the literal value
+tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call`,
+exactly as a project allow rule does. Crew still records it: when a call of an `auto`
+session reaches a terminal status without a `session/request_permission`,
+`AcpClient._maybe_audit_unasked_tool_call` writes an SEL `tool_invocation` row for it
+(`outcome` `auto_approved` when it completed, else its status; `metadata.decided_by`
+`claude_classifier`). That row is an after-the-fact record, not a gate. Only the literal value
 `auto` resolves, a backend that seeds no settings file resolves to nothing, and with
 no opt-in no `defaultMode` is written at all. Crew never seeds `bypassPermissions`:
 `resolve_cc_permission_mode` resolves only `auto` and warns on anything else. That mode
 can only arrive from a foreign project settings file, which is the disclosed
-inherited-settings gap below. The audit half of the `auto` trade is tracked in #12744.
+inherited-settings gap below. The gate half of the `auto` trade (a host check before the call runs) is tracked in #12743.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any

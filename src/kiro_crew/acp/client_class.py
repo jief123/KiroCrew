@@ -716,6 +716,10 @@ class AcpClient:
         # tool_call_id — the RESULT event carries no title. See
         # _maybe_fire_post_tool_hooks.
         self._observed_tool_calls: dict[str, tuple[str, str]] = {}
+        # This turn's tool-call ids whose SEL record is settled: the call asked the
+        # host (its consumer writes the record) or the unasked-call audit wrote it.
+        # See _maybe_audit_unasked_tool_call.
+        self._sel_settled_tool_calls: set[str] = set()
         self._last_stop_reason: str = ""
         # Dynamic config from ACP session/new response and config_option_update notifications.
         # Only the effort configOptions are consumed (model lists come from
@@ -1457,6 +1461,8 @@ class AcpClient:
     # Turn an ``AcpClient`` session's tool-call frames into events, and audit them: ``kiro_crew.acp.client_tool_events``.
     _extract_text_chunk = _client_tool_events._extract_text_chunk
     _maybe_audit_tool_call = _client_tool_events._maybe_audit_tool_call
+    _maybe_audit_unasked_tool_call = _client_tool_events._maybe_audit_unasked_tool_call
+    _note_asked_tool_call = _client_tool_events._note_asked_tool_call
     _maybe_fire_pre_tool_hooks = _client_tool_events._maybe_fire_pre_tool_hooks
     _maybe_fire_post_tool_hooks = _client_tool_events._maybe_fire_post_tool_hooks
     _emit_tool_interrupted_sel = _client_tool_events._emit_tool_interrupted_sel
