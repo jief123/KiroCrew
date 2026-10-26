@@ -579,7 +579,7 @@ async def test_every_post_script_refusal_removes_the_layout_files_that_appeared(
     monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
     monkeypatch.setattr(registry, "sel", lambda: MagicMock())
 
-    def _deny_what_the_script_wrote(name, *, manifest=None, action=""):
+    def _deny_what_the_script_wrote(name, *, manifest=None, action="", **_k):
         # The post-script re-check reads the manifest the script rewrote; every
         # earlier check reads the entering one and admits it.
         if manifest is not None and manifest.description == "rewritten by the script":

@@ -50,6 +50,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "approval_modes": {"mode": "allow", "allow": ["normal", "trust", "trust_reads"]},
     "mcp": {"mode": "allow", "allow": ["@kirocrew-core"]},
     "apps": _OFF,
+    "app_versions": _OFF,
     "commands": _OFF,
     "filesystem.read": {
         "mode": "allow",
@@ -83,6 +84,8 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     "capabilities.decisions": _CAPABILITY_OFF,
     "capabilities.decisions_local": _CAPABILITY_OFF,
+    "capabilities.extension_install": _CAPABILITY_OFF,
+    "capabilities.app_dev_mode": _CAPABILITY_OFF,
 }
 
 BASELINE_UNGATED: Dict[str, str] = {
