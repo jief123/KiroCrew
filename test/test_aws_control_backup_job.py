@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps import job_sdk
 from kiro_crew.apps.builtins.aws_control import hooks
@@ -755,7 +756,14 @@ class TestRunnerResolvesItsTarget:
         assert secret not in run.error
         work.assert_not_called()
 
-    def test_an_unreachable_account_fails_without_falling_back(self, sdk):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_an_unreachable_account_fails_without_falling_back"),
+            *named_cases("test_the_owner_path_does_not_fall_back_on_an_expired_cache"),
+        ],
+    )
+    def test_an_unreachable_account_does_not_fall_back(self, sdk):
         # No healthy profile for this account. There must be no silent fallback
         # to another account's credentials -- the run fails and says to reconnect.
         with (
@@ -1118,22 +1126,6 @@ class TestScheduledPathFallsBackToTheVerifiedProfile:
         assert gate.call_args.args[1:] == (PROFILE, REGION)
         find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
         assert work.call_args.args[1:3] == (PROFILE, REGION)
-
-    def test_the_owner_path_does_not_fall_back_on_an_expired_cache(self, sdk):
-        # The fallback is scheduled-only: an owner run carries no profile/region
-        # param and its route pre-flight has just warmed the snapshot, so an
-        # expired cache for it is the honest "reconnect" failure, not a fallback.
-        with (
-            mock.patch.object(accounts_mod, "resolve_account_profile_cached", return_value=None),
-            mock.patch.object(backup.storage, "find_drive") as find,
-            mock.patch.object(backup, "run_snapshot_backup") as work,
-        ):
-            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            run = _await_terminal(sdk, run_id)
-        assert run.status == job_sdk.FAILED
-        assert "no working connection" in run.error
-        find.assert_not_called()
-        work.assert_not_called()
 
     def test_a_scheduled_run_prefers_the_live_cache_when_it_is_warm(self, sdk):
         # When the cache IS warm the fallback must not shadow it: the per-run

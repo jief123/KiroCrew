@@ -22,6 +22,9 @@ fresh session whose entitlement is not yet known, and an explicit unusable pick.
 
 from __future__ import annotations
 
+import pytest
+from named_cases_helpers import named_cases
+
 from kiro_crew.acp.client import (
     AcpModelUnavailable,
     _rejected_model_from_error,
@@ -114,7 +117,14 @@ class TestEntitlementPredicate:
     def test_served_model_is_usable(self):
         assert model_is_unusable("claude-sonnet-4.6", _ENTITLED) is False
 
-    def test_unserved_model_is_unusable(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_unserved_model_is_unusable"),
+            *named_cases("test_unavailable_pick_would_be_flagged_by_the_predicate"),
+        ],
+    )
+    def test_an_unserved_model_is_unusable(self):
         assert model_is_unusable("claude-opus-4.8", _FREE_TIER) is True
 
     def test_case_insensitive(self):
@@ -345,9 +355,6 @@ class TestPinSpellingResolver:
 class TestExplicitPickRefusal:
     """An EXPLICIT user pick that the account can't run RAISES — it is never
     silently substituted (a user who chose a model should see the error)."""
-
-    def test_unavailable_pick_would_be_flagged_by_the_predicate(self):
-        assert model_is_unusable("claude-opus-4.8", _FREE_TIER) is True
 
     def test_model_unavailable_error_is_terminal_and_names_alternatives(self):
         err = AcpModelUnavailable("claude-opus-4.8", _FREE_TIER, backend=ACP_BACKEND_KIRO)

@@ -30,6 +30,7 @@ from ai_review_workflows_helpers import (
     _workflow,
 )
 from git_maintenance_helpers import git_maintenance_off_entries
+from named_cases_helpers import named_cases
 
 
 @functools.lru_cache(maxsize=1)
@@ -1187,7 +1188,14 @@ class TestPerHeadMonotonicFloor:
         assert got.returncode == 1, _proc_log(got)
         assert "held at the harder verdict" in got.stdout
 
-    def test_same_repo_new_head_with_no_prior_stays_green(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_same_repo_new_head_with_no_prior_stays_green"),
+            *named_cases("test_same_repo_a_well_formed_empty_listing_publishes_clean"),
+        ],
+    )
+    def test_same_repo_no_prior_or_empty_listing_stays_green(self, tmp_path: Path) -> None:
         got = self._run_same_repo(tmp_path, checkruns='{"total_count":0,"check_runs":[]}')
         assert got.returncode == 0, _proc_log(got)
 
@@ -1278,7 +1286,14 @@ class TestPerHeadMonotonicFloor:
         assert rc == 0, log
         assert out.get("conclusion") == "failure", out
 
-    def test_fork_new_head_with_no_prior_publishes_clean(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_fork_new_head_with_no_prior_publishes_clean"),
+            *named_cases("test_fork_a_well_formed_empty_listing_publishes_clean"),
+        ],
+    )
+    def test_fork_no_prior_or_empty_listing_publishes_clean(self, tmp_path: Path) -> None:
         rc, out, log = self._run_fork_decide(
             tmp_path, checkruns='{"total_count":0,"check_runs":[]}'
         )
@@ -1430,21 +1445,10 @@ class TestPerHeadMonotonicFloor:
         assert got.returncode == 1, _proc_log(got)
         assert "held at the harder verdict" in got.stdout
 
-    def test_same_repo_a_well_formed_empty_listing_publishes_clean(self, tmp_path: Path) -> None:
-        got = self._run_same_repo(tmp_path, checkruns='{"total_count":0,"check_runs":[]}')
-        assert got.returncode == 0, _proc_log(got)
-
     def test_fork_an_exit_zero_empty_read_fails_closed(self, tmp_path: Path) -> None:
         rc, out, log = self._run_fork_decide(tmp_path, checkruns="")
         assert rc == 0, log
         assert out.get("conclusion") == "failure", out
-
-    def test_fork_a_well_formed_empty_listing_publishes_clean(self, tmp_path: Path) -> None:
-        rc, out, log = self._run_fork_decide(
-            tmp_path, checkruns='{"total_count":0,"check_runs":[]}'
-        )
-        assert rc == 0, log
-        assert out.get("conclusion") == "success", out
 
     def test_same_repo_an_errored_floor_computation_reds_the_lane(self, tmp_path: Path) -> None:
         # The harness exits 2 with no stdout. A floor that cannot be computed is a

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import model_registry as mr
 
@@ -281,7 +282,14 @@ class TestModelRegistry:
         assert mr.from_provider_id("claude-opus-4-7[1m]", "claude_code") == "opus-4.7-1m"
         assert mr.from_provider_id("claude-sonnet-4-6[1m]", "claude_code") == "sonnet-4.6-1m"
 
-    def test_fable_5_not_default(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_fable_5_not_default"),
+            *named_cases("test_default_canonical"),
+        ],
+    )
+    def test_the_claude_code_default_is_canonical(self):
         # Fable 5 is opt-in; Opus 4.8 stays default.
         assert mr.default("claude_code") == "opus-4.8-1m"
 
@@ -308,9 +316,6 @@ class TestModelRegistry:
         assert "global.anthropic.claude-sonnet-4-6[1m]" in ids
         # 'auto' maps to "" and is excluded from the allowlist.
         assert "" not in ids
-
-    def test_default_canonical(self):
-        assert mr.default("claude_code") == "opus-4.8-1m"
 
     def test_from_provider_id_reverse_lookup(self):
         assert (

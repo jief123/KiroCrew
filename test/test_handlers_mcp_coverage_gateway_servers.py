@@ -20,6 +20,7 @@ import pytest
 from handlers_mcp_coverage_helpers import agents_dir_fixture  # noqa: F401
 from handlers_mcp_coverage_helpers import sandbox_fixture  # noqa: F401
 from handlers_mcp_coverage_helpers import _effective_stubs, _payload, _request
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.mcp_discovery import McpServerInfo
@@ -645,13 +646,34 @@ class TestGatewaySetStub:
     @pytest.mark.parametrize(
         "body,expected",
         [
-            ({"stub": True}, "name is required"),
-            ({"name": "../evil", "stub": True}, "invalid server name"),
-            ({"name": "ok-mcp", "stub": "yes"}, "stub must be a boolean"),
-            ({"name": "ok-mcp"}, "stub must be a boolean"),
+            *named_cases(
+                "test_validation_matrix_is_400",
+                "body,expected",
+                [
+                    ({"stub": True}, "name is required"),
+                    ({"name": "../evil", "stub": True}, "invalid server name"),
+                    ({"name": "ok-mcp", "stub": "yes"}, "stub must be a boolean"),
+                    ({"name": "ok-mcp"}, "stub must be a boolean"),
+                ],
+            ),
+            *named_cases(
+                "test_validation_matrix_is_400",
+                "body,expected",
+                [
+                    ({"names": "a-mcp", "stub": True}, "names must be a list of strings"),
+                    (
+                        {"names": ["a-mcp", 7], "stub": True},
+                        "names must be a list of strings",
+                    ),
+                    ({"names": [], "stub": True}, "names is required"),
+                    ({"names": ["  "], "stub": True}, "names is required"),
+                    ({"names": ["../evil"], "stub": True}, "invalid server name"),
+                    ({"names": ["a-mcp"]}, "stub must be a boolean"),
+                ],
+            ),
         ],
     )
-    async def test_validation_matrix_is_400(
+    async def test_an_invalid_body_is_400(
         self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
     ) -> None:
         monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
@@ -949,29 +971,6 @@ class TestGatewaySetStub:
 
 class TestGatewaySetStubBatch:
     """``{"names": [...]}`` writes the allowlist once for the whole set."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "body,expected",
-        [
-            ({"names": "a-mcp", "stub": True}, "names must be a list of strings"),
-            (
-                {"names": ["a-mcp", 7], "stub": True},
-                "names must be a list of strings",
-            ),
-            ({"names": [], "stub": True}, "names is required"),
-            ({"names": ["  "], "stub": True}, "names is required"),
-            ({"names": ["../evil"], "stub": True}, "invalid server name"),
-            ({"names": ["a-mcp"]}, "stub must be a boolean"),
-        ],
-    )
-    async def test_validation_matrix_is_400(
-        self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
-    ) -> None:
-        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
-        resp = await mcp_mod.api_mcp_gateway_set_stub(_request(body, state=SimpleNamespace()))
-        assert resp.status == 400
-        assert expected in _payload(resp)["error"]
 
     @pytest.mark.asyncio
     async def test_oversized_batch_is_400(self, monkeypatch: pytest.MonkeyPatch) -> None:

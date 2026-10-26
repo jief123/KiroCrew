@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import guide_catalog, mcp_guide, ui_index
 from kiro_crew.validation import ValidationError
@@ -245,18 +246,38 @@ def test_a_zh_answer_found_by_a_term_is_labelled_in_chinese() -> None:
 @pytest.mark.parametrize(
     ("query", "lang", "target"),
     [
-        ("how do i turn on dark mode", "en", "setting:display.mode"),
-        # "does" is stemmed to "doe"; the question-word list must catch both forms.
-        ("where does dark mode live", "en", "setting:display.mode"),
-        ("深色模式", "zh-CN", "setting:display.mode"),
-        ("where are my reminders", "en", "page.schedule"),
-        ("提醒在哪里", "zh-CN", "page.schedule"),
-        ("where do i put my api key", "en", "settings.tab.secrets"),
-        ("messaging", "en", "settings.tab.channels"),
-        ("connect slack", "en", "settings.sub.channels.slack"),
+        *named_cases(
+            "test_seeded_newcomer_words_on_pages_and_settings",
+            ("query", "lang", "target"),
+            [
+                ("how do i turn on dark mode", "en", "setting:display.mode"),
+                # "does" is stemmed to "doe"; the question-word list must catch both forms.
+                ("where does dark mode live", "en", "setting:display.mode"),
+                ("深色模式", "zh-CN", "setting:display.mode"),
+                ("where are my reminders", "en", "page.schedule"),
+                ("提醒在哪里", "zh-CN", "page.schedule"),
+                ("where do i put my api key", "en", "settings.tab.secrets"),
+                ("messaging", "en", "settings.tab.channels"),
+                ("connect slack", "en", "settings.sub.channels.slack"),
+            ],
+        ),
+        *named_cases(
+            "test_runtime_labelled_chips_are_found_by_newcomer_words",
+            ("query", "lang", "target"),
+            [
+                ("change the model for this chat", "en", "chat.model-picker"),
+                ("how do I switch model", "en", "chat.model-picker"),
+                ("换模型", "zh-CN", "chat.model-picker"),
+                ("怎么换模型", "zh-CN", "chat.model-picker"),
+                ("memory mode", "en", "chat.memory-mode"),
+                ("where is incognito mode", "en", "chat.memory-mode"),
+                ("记忆", "zh-CN", "chat.memory-mode"),
+                ("无痕模式在哪里", "zh-CN", "chat.memory-mode"),
+            ],
+        ),
     ],
 )
-def test_seeded_newcomer_words_on_pages_and_settings(query: str, lang: str, target: str) -> None:
+def test_newcomer_words_find_their_target(query: str, lang: str, target: str) -> None:
     assert _top(ui_index.find_ui(query, lang))["id"] == target
 
 
@@ -382,25 +403,6 @@ def test_the_phone_menu_search_row_hangs_under_the_menu_button_on_every_page() -
     ]
     zh = _by_id(ui_index.find_ui("搜索", "zh-CN"))["shell.menu-search"]
     assert _path(zh["placements"][0]) == ["打开菜单", "搜索会话、文件和命令"]
-
-
-@pytest.mark.parametrize(
-    ("query", "lang", "target"),
-    [
-        ("change the model for this chat", "en", "chat.model-picker"),
-        ("how do I switch model", "en", "chat.model-picker"),
-        ("换模型", "zh-CN", "chat.model-picker"),
-        ("怎么换模型", "zh-CN", "chat.model-picker"),
-        ("memory mode", "en", "chat.memory-mode"),
-        ("where is incognito mode", "en", "chat.memory-mode"),
-        ("记忆", "zh-CN", "chat.memory-mode"),
-        ("无痕模式在哪里", "zh-CN", "chat.memory-mode"),
-    ],
-)
-def test_runtime_labelled_chips_are_found_by_newcomer_words(
-    query: str, lang: str, target: str
-) -> None:
-    assert _top(ui_index.find_ui(query, lang))["id"] == target
 
 
 def test_a_runtime_label_is_returned_as_a_description_never_as_a_label() -> None:

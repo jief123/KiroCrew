@@ -41,6 +41,7 @@ from mcp_gatewayd_coverage_helpers import (  # noqa: F401 -- the autouse fixture
     _FakeWriter,
     _pool_key,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -656,13 +657,20 @@ class TestReadFirstFrame:
         assert await gw._read_first_frame(cast(Any, reader)) is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("line", [b"not json\n", b"\xff\xfe\n"])
-    async def test_undecodable_or_invalid_json_returns_none(self, line):
-        assert await gw._read_first_frame(cast(Any, _FakeReader(line=line))) is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("line", [b"[1,2]\n", b'"hello"\n', b"7\n"])
-    async def test_non_object_json_is_refused(self, line):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            *named_cases(
+                "test_undecodable_or_invalid_json_returns_none",
+                "line",
+                [b"not json\n", b"\xff\xfe\n"],
+            ),
+            *named_cases(
+                "test_non_object_json_is_refused", "line", [b"[1,2]\n", b'"hello"\n', b"7\n"]
+            ),
+        ],
+    )
+    async def test_a_bad_first_frame_returns_none(self, line):
         assert await gw._read_first_frame(cast(Any, _FakeReader(line=line))) is None
 
     @pytest.mark.asyncio

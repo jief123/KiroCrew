@@ -27,6 +27,7 @@ import urllib.request
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.skill_providers import _http
 
@@ -103,14 +104,16 @@ class TestIsInternalUrl:
         "https://example.com/x",
     ]
 
-    @pytest.mark.parametrize("url", ENCODED)
-    def test_encoded_internal_is_blocked(self, url):
+    @pytest.mark.parametrize(
+        "url",
+        [
+            *named_cases("test_encoded_internal_is_blocked", "url", ENCODED),
+            *named_cases("test_plain_internal_is_blocked", "url", PLAIN),
+        ],
+    )
+    def test_an_internal_url_is_blocked(self, url):
         # Pre-fix these raised ValueError in ip_address(), were swallowed, and the
         # URL read as "not internal" -- an SSRF-to-metadata credential read.
-        assert _http.is_internal_url(url) is True
-
-    @pytest.mark.parametrize("url", PLAIN)
-    def test_plain_internal_is_blocked(self, url):
         assert _http.is_internal_url(url) is True
 
     @pytest.mark.parametrize("url", EXTERNAL)

@@ -683,6 +683,6 @@ pins the bare-ID case.
 `model_registry.available_models` and `display_list` sort default entries first
 rather than trusting JSON object order. This is load-bearing because the adapter
 uses the resulting allowlist when an automatic selection omits an explicit
-model. `TestModelRegistry.test_fable_5_not_default` and
+model. `TestModelRegistry.test_the_claude_code_default_is_canonical` and
 `TestModelRegistry.test_available_models_is_default_first` pin the default and
 ordering behavior.

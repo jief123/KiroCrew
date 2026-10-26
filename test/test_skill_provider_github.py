@@ -26,6 +26,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.skill_providers import github as gh
 from kiro_crew.skill_providers.base import SkillProvider, SkillProviderError
@@ -1177,9 +1178,20 @@ class TestMaterialisation:
 
     @pytest.mark.parametrize(
         "path",
-        ["CON.md", "con", "PRN.txt", "aux", "NUL", "com1.md", "lpt9.md", "rules/con.md"],
+        [
+            *named_cases(
+                "test_reserved_device_names_are_refused_at_every_level",
+                "path",
+                ["CON.md", "con", "PRN.txt", "aux", "NUL", "com1.md", "lpt9.md", "rules/con.md"],
+            ),
+            *named_cases(
+                "test_a_reserved_stem_with_several_extensions_is_still_reserved",
+                "path",
+                ["con.d.md", "rules/nul.tar.gz"],
+            ),
+        ],
     )
-    def test_reserved_device_names_are_refused_at_every_level(self, path):
+    def test_a_reserved_device_name_is_refused(self, path):
         # Windows reserves these with ANY extension and in every directory, so the
         # write raises -- after the old skill has already been removed.
         assert gh._path_problem(path)
@@ -1191,12 +1203,6 @@ class TestMaterialisation:
         # The reservation is on the whole stem, not on a prefix: refusing
         # ``console.md`` would make an ordinary repository unimportable for nothing.
         assert gh._path_problem(path) == ""
-
-    @pytest.mark.parametrize("path", ["con.d.md", "rules/nul.tar.gz"])
-    def test_a_reserved_stem_with_several_extensions_is_still_reserved(self, path):
-        # Windows reads the device name as the component before the FIRST dot, so
-        # ``con.d.md`` is ``CON`` carrying an extension, not a name called "con.d".
-        assert gh._path_problem(path)
 
     def test_a_name_used_as_both_file_and_directory_is_refused(self):
         # Legal in one git tree, impossible on a case-insensitive filesystem: the

@@ -9,6 +9,7 @@ import re
 import shlex
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import security
 from kiro_crew.security import argv_floor, inline_payload
@@ -165,49 +166,51 @@ class TestACallIsJudgedByWhatItResolvesTo:
     @pytest.mark.parametrize(
         "spelling",
         [
-            # The name written at the call, and reached through a module alias.
-            'import runpy; runpy.run_module("kiro_crew")',
-            'import runpy as rp; rp.run_module("kiro_crew")',
-            # Bound by a from-import, with and without an alias.
-            'from runpy import run_module as r; r("kiro_crew")',
-            'from runpy import run_module; run_module("kiro_crew")',
-            'from importlib import import_module as m; m("kiro_crew")',
-            # Bound by assignment, from the module or from a resolving head.
-            'import runpy; r = runpy.run_module; r("kiro_crew")',
-            'import runpy; r = getattr(runpy, "run_module"); r("kiro_crew")',
-            'import runpy; r = runpy.__dict__["run_module"]; r("kiro_crew")',
-            # Called straight off the head, with no name to read at all.
-            'import runpy; getattr(runpy, "run_module")("kiro_crew")',
-            'import runpy; runpy.__dict__["run_module"]("kiro_crew")',
-            # The bound name spelled in pieces, which the fold joins first.
-            'import runpy; getattr(runpy, "run_" "module")("kiro_crew")',
-            # Grouped: the parentheses are not an operation, so the head is what
-            # they wrap -- dotted, nested, spaced, or a bound name.
-            'import runpy; (runpy.run_module)("kiro_crew")',
-            'import runpy; ((runpy.run_module))("kiro_crew")',
-            'import runpy; ( runpy.run_module )("kiro_crew")',
-            'from runpy import run_module as r; (r)("kiro_crew")',
-            'import runpy; r = (runpy.run_module); r("kiro_crew")',
+            *named_cases(
+                "test_every_static_binding_reaches_the_runner",
+                "spelling",
+                [
+                    # The name written at the call, and reached through a module alias.
+                    'import runpy; runpy.run_module("kiro_crew")',
+                    'import runpy as rp; rp.run_module("kiro_crew")',
+                    # Bound by a from-import, with and without an alias.
+                    'from runpy import run_module as r; r("kiro_crew")',
+                    'from runpy import run_module; run_module("kiro_crew")',
+                    'from importlib import import_module as m; m("kiro_crew")',
+                    # Bound by assignment, from the module or from a resolving head.
+                    'import runpy; r = runpy.run_module; r("kiro_crew")',
+                    'import runpy; r = getattr(runpy, "run_module"); r("kiro_crew")',
+                    'import runpy; r = runpy.__dict__["run_module"]; r("kiro_crew")',
+                    # Called straight off the head, with no name to read at all.
+                    'import runpy; getattr(runpy, "run_module")("kiro_crew")',
+                    'import runpy; runpy.__dict__["run_module"]("kiro_crew")',
+                    # The bound name spelled in pieces, which the fold joins first.
+                    'import runpy; getattr(runpy, "run_" "module")("kiro_crew")',
+                    # Grouped: the parentheses are not an operation, so the head is what
+                    # they wrap -- dotted, nested, spaced, or a bound name.
+                    'import runpy; (runpy.run_module)("kiro_crew")',
+                    'import runpy; ((runpy.run_module))("kiro_crew")',
+                    'import runpy; ( runpy.run_module )("kiro_crew")',
+                    'from runpy import run_module as r; (r)("kiro_crew")',
+                    'import runpy; r = (runpy.run_module); r("kiro_crew")',
+                ],
+            ),
+            *named_cases(
+                "test_every_static_binding_reaches_the_loader",
+                "spelling",
+                [
+                    # The loader gate reads the same table: each of these loads the
+                    # installed console script, whose dispatch is the mint.
+                    'import shutil; exec(open(shutil.which("kirocrew")).read())',
+                    'from builtins import exec as e; import shutil; e(open(shutil.which("kirocrew")).read())',
+                    'import builtins,shutil; getattr(builtins, "exec")(open(shutil.which("kirocrew")).read())',
+                    'import builtins,shutil; g = builtins.__dict__["exec"]; g(open(shutil.which("kirocrew")).read())',
+                    'import builtins,shutil; (builtins.exec)(open(shutil.which("kirocrew")).read())',
+                ],
+            ),
         ],
     )
-    def test_every_static_binding_reaches_the_runner(self, spelling):
-        cmd = "python3 -c " + shlex.quote(spelling)
-        assert argv_floor._is_credential_mint(cmd.lower(), raw_text=cmd), cmd
-        assert _rule_of(cmd) == _MINT, cmd
-
-    @pytest.mark.parametrize(
-        "spelling",
-        [
-            # The loader gate reads the same table: each of these loads the
-            # installed console script, whose dispatch is the mint.
-            'import shutil; exec(open(shutil.which("kirocrew")).read())',
-            'from builtins import exec as e; import shutil; e(open(shutil.which("kirocrew")).read())',
-            'import builtins,shutil; getattr(builtins, "exec")(open(shutil.which("kirocrew")).read())',
-            'import builtins,shutil; g = builtins.__dict__["exec"]; g(open(shutil.which("kirocrew")).read())',
-            'import builtins,shutil; (builtins.exec)(open(shutil.which("kirocrew")).read())',
-        ],
-    )
-    def test_every_static_binding_reaches_the_loader(self, spelling):
+    def test_every_static_binding_is_a_credential_mint(self, spelling):
         cmd = "python3 -c " + shlex.quote(spelling)
         assert argv_floor._is_credential_mint(cmd.lower(), raw_text=cmd), cmd
         assert _rule_of(cmd) == _MINT, cmd

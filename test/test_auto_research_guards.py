@@ -9,7 +9,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from auto_research_helpers import isolate_fixture  # noqa: F401 - fixture
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps.builtins.auto_research.handlers import (
     CampaignStatus,
@@ -117,19 +119,14 @@ class TestRequireAuth:
         request.query = {}
         assert _require_auth(request) is None
 
-    def test_returns_401_when_no_user(self):
-        from unittest.mock import MagicMock
-
-        from kiro_crew.apps.builtins.auto_research.handlers import _require_auth
-
-        request = MagicMock()
-        request.get.return_value = None
-        resp = _require_auth(request)
-        assert resp is not None
-        assert resp.status == 401
-
-    def test_rejects_raw_token(self):
-        # Raw token alone (without middleware-set user) is rejected — no fail-open.
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_returns_401_when_no_user"),
+            *named_cases("test_rejects_raw_token"),
+        ],
+    )
+    def test_a_request_without_a_user_gets_401(self):
         from unittest.mock import MagicMock
 
         from kiro_crew.apps.builtins.auto_research.handlers import _require_auth
