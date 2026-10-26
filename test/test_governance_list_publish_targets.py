@@ -19,7 +19,6 @@ import pytest
 
 from kiro_crew import publish_governance as pg
 from kiro_crew import publish_sync
-from kiro_crew.deploy import engine
 from kiro_crew.deploy import handlers as deploy_handlers
 from kiro_crew.deploy import handlers_sites
 from kiro_crew.platform import governance
@@ -127,42 +126,36 @@ def _answer(denied_items: set[str]):
 
 
 def _patch(monkeypatch, denied: set[str], governed: bool) -> list[str]:
+    """*governed*: the accounts list restricts something (it is not fully open)."""
     asked, permits = _answer(denied)
     monkeypatch.setattr("kiro_crew.platform.governance_profiles.governance_permits", permits)
-    monkeypatch.setattr(pg, "publish_list_governed", lambda _s, _n: governed)
+    monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, _n: not governed)
     return asked
 
 
-def test_deploy_asks_audience_and_region_but_reads_no_account_when_unbounded(
-    monkeypatch,
-) -> None:
+def test_deploy_asks_audience_then_region(monkeypatch) -> None:
     asked = _patch(monkeypatch, set(), governed=False)
-
-    def _no_lookup() -> str:  # pragma: no cover - reached only on regression
-        raise AssertionError("account read with no accounts list")
-
-    assert pg.deploy_target_denied_reason("s", "us-east-1", _no_lookup) is None
+    assert pg.deploy_target_denied_reason("s", "us-east-1") is None
     assert asked == ["audience:public", "regions:us-east-1"]
 
 
-def test_deploy_denied_region_stops_before_the_account(monkeypatch) -> None:
-    asked = _patch(monkeypatch, {"regions:eu-west-1"}, governed=True)
-    reason = pg.deploy_target_denied_reason("s", "eu-west-1", lambda: _ACCOUNT)
+def test_deploy_denied_region_is_refused(monkeypatch) -> None:
+    _patch(monkeypatch, {"regions:eu-west-1"}, governed=False)
+    reason = pg.deploy_target_denied_reason("s", "eu-west-1")
     assert reason and "regions" in reason
-    assert "accounts:" + _ACCOUNT not in asked
 
 
-def test_deploy_asks_the_account_when_bounded(monkeypatch) -> None:
-    asked = _patch(monkeypatch, {f"accounts:{_ACCOUNT}"}, governed=True)
-    reason = pg.deploy_target_denied_reason("s", "us-east-1", lambda: _ACCOUNT)
+def test_deploy_refused_while_accounts_restricts(monkeypatch) -> None:
+    """Account binding is not supported yet, so a bounded list refuses every deploy."""
+    asked = _patch(monkeypatch, set(), governed=True)
+    reason = pg.deploy_target_denied_reason("s", "us-east-1")
     assert reason and "accounts" in reason
-    assert asked[-1] == f"accounts:{_ACCOUNT}"
+    assert not any(item.startswith("accounts:") for item in asked)
 
 
-@pytest.mark.parametrize("lookup", [lambda: "", lambda: (_ for _ in ()).throw(OSError())])
-def test_deploy_unreadable_account_denies(monkeypatch, lookup) -> None:
-    _patch(monkeypatch, set(), governed=True)
-    assert pg.deploy_target_denied_reason("s", "us-east-1", lookup)
+def test_oss_deploy_without_lists_is_unchanged() -> None:
+    """The standalone default context carries no policy, so nothing is refused."""
+    assert pg.deploy_target_denied_reason("s", "eu-west-1") is None
 
 
 def test_governance_error_denies(monkeypatch) -> None:
@@ -173,32 +166,49 @@ def test_governance_error_denies(monkeypatch) -> None:
     assert pg.publish_list_denied_reason("s", "deploy-web-aws", "regions", "us-east-1")
 
 
-def test_list_probe_reads_both_levels(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("accounts", "open_"),
+    [
+        (None, True),
+        ({"mode": "deny", "deny": []}, True),
+        ({"mode": "allow", "allow": ["*"]}, True),
+        ({"mode": "deny", "deny": [_ACCOUNT]}, False),
+        ({"mode": "allow", "allow": [_ACCOUNT]}, False),
+    ],
+)
+def test_list_probe_asks_what_the_list_allows(monkeypatch, accounts, open_) -> None:
+    """A present list is open only if it permits every value, the unknown one too."""
     monkeypatch.setattr(
         "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None
     )
-    ctx = SimpleNamespace(governance=_ceiling(_publish_on(accounts={"mode": "deny", "deny": []})))
+    lists = {} if accounts is None else {"accounts": accounts}
+    ctx = SimpleNamespace(governance=_ceiling(_publish_on(**lists)))
     monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: ctx)
-    assert pg.publish_list_governed("s", "accounts")
-    assert not pg.publish_list_governed("s", "regions")
-    ctx.governance = None
-    assert not pg.publish_list_governed("s", "accounts")
+    assert pg.publish_list_unrestricted("s", "accounts") is open_
 
 
-@pytest.mark.parametrize(
-    ("rc", "out", "want"),
-    [(0, f"{_ACCOUNT}\n", _ACCOUNT), (0, "not-an-id", ""), (255, _ACCOUNT, "")],
-)
-def test_deploy_account_comes_from_the_credentials(monkeypatch, rc, out, want) -> None:
-    calls: list[list[str]] = []
-
-    def _run(args, profile, timeout=30, **_kw):
-        calls.append(args)
-        return rc, out, ""
-
-    monkeypatch.setattr(engine, "run_aws", _run)
-    assert handlers_sites._deploy_account("dev") == want
-    assert calls[0][:2] == ["sts", "get-caller-identity"]
+def test_enterprise_open_lists_let_the_drives_publish(enterprise, monkeypatch) -> None:
+    """Presence is not a restriction: every list is present in enterprise."""
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None
+    )
+    open_lists = {n: {"mode": "deny", "deny": []} for n in ("regions", "audience", "accounts")}
+    publish = _publish_on(**open_lists)
+    publish["scopes"]["destinations"] = {"mode": "deny", "deny": []}
+    ctx = SimpleNamespace(governance=_ceiling(publish))
+    monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: ctx)
+    monkeypatch.setattr(pg, "_read_allowed_destinations", lambda: ([], None))
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        lambda *_a, **_k: SimpleNamespace(permitted=True),
+    )
+    request = SimpleNamespace(headers={"X-Session-Key": "s"})
+    for drive in ("personal-drive", "aws-control-drive"):
+        assert pg.publish_denied_reason(request, drive) is None, drive
+    # A deny list with an entry may name the drive's unknown region: refused.
+    publish["scopes"]["regions"] = {"mode": "deny", "deny": ["us-east-1"]}
+    ctx.governance = _ceiling(publish)
+    assert "regions" in (pg.publish_denied_reason(request, "personal-drive") or "")
 
 
 def test_do_deploy_refuses_before_staging(monkeypatch) -> None:
@@ -207,7 +217,7 @@ def test_do_deploy_refuses_before_staging(monkeypatch) -> None:
 
     seen: dict = {}
 
-    def _deny(session_key, region, _account_of):
+    def _deny(session_key, region):
         seen.update(session_key=session_key, region=region)
         return "regions 'eu-west-1' is not permitted"
 
@@ -222,25 +232,58 @@ def test_do_deploy_refuses_before_staging(monkeypatch) -> None:
     assert seen == {"session_key": "k", "region": "eu-west-1"}
 
 
-# ── Artifact publish audience and the unchecked cloud destination ───────────
+# ── Every other destination: refused unless the lists are open ──────────────
 
 
-def test_personal_drive_refused_while_regions_are_bounded(monkeypatch) -> None:
+def _gate_permits(monkeypatch) -> SimpleNamespace:
     monkeypatch.setattr(
         "kiro_crew.platform.governance_profiles.governance_permits",
         lambda *_a, **_k: SimpleNamespace(permitted=True),
     )
     monkeypatch.setattr(pg, "_read_allowed_destinations", lambda: ([], None))
-    request = SimpleNamespace(headers={"X-Session-Key": "s"})
-    monkeypatch.setattr(pg, "publish_list_governed", lambda _s, name: name == "regions")
-    assert "regions" in (pg.publish_denied_reason(request, "personal-drive") or "")
-    assert pg.publish_denied_reason(request, "deploy-web-aws") is None
-    monkeypatch.setattr(pg, "publish_list_governed", lambda _s, _n: False)
-    assert pg.publish_denied_reason(request, "personal-drive") is None
+    return SimpleNamespace(headers={"X-Session-Key": "s"})
+
+
+@pytest.mark.parametrize("destination", ["default", "personal-drive", "aws-control-drive"])
+@pytest.mark.parametrize("bounded", ["regions", "audience", "accounts"])
+def test_other_destinations_refused_while_a_list_restricts(
+    monkeypatch, destination, bounded
+) -> None:
+    request = _gate_permits(monkeypatch)
+    monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, n: n != bounded)
+    assert bounded in (pg.publish_denied_reason(request, destination) or "")
+    monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, _n: True)
+    assert pg.publish_denied_reason(request, destination) is None
+
+
+def test_enterprise_artifact_publish_is_refused_by_default(enterprise, monkeypatch) -> None:
+    """The baseline turns the lists off, so a named destination still cannot publish."""
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None
+    )
+    publish = _publish_on()
+    publish["scopes"]["destinations"] = {"mode": "allow", "allow": ["default"]}
+    ctx = SimpleNamespace(governance=_ceiling(publish))
+    monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: ctx)
+    request = _gate_permits(monkeypatch)
+    assert "only the public web deploy" in (pg.publish_denied_reason(request, "default") or "")
+
+
+def test_oss_artifact_publish_is_unchanged(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None
+    )
+    ctx = SimpleNamespace(governance=None)
+    monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: ctx)
+    request = _gate_permits(monkeypatch)
+    assert pg.publish_denied_reason(request, "default") is None
 
 
 @pytest.mark.asyncio
-async def test_artifact_publish_refuses_a_denied_audience(tmp_path, monkeypatch) -> None:
+async def test_artifact_gate_runs_off_the_event_loop(tmp_path, monkeypatch) -> None:
+    """The gate reads policy and profiles from disk, so it does not run on the loop."""
+    import threading
+
     from test_artifact_sharing_handlers import _request
 
     from kiro_crew import artifacts as art_mod
@@ -250,102 +293,34 @@ async def test_artifact_publish_refuses_a_denied_audience(tmp_path, monkeypatch)
     store = ArtifactStore(root=tmp_path / "artifacts")
     monkeypatch.setattr(art_mod, "_default_store", store)
     monkeypatch.setattr(art_handlers, "_is_restricted_session", lambda *_a: False)
-    monkeypatch.setattr(art_handlers, "_publish_governance_denied", lambda *_a: None)
-    asked: list[tuple] = []
+    loop_thread = threading.current_thread()
+    on_loop: list[bool] = []
 
-    def _audience(_req, provider, visibility):
-        asked.append((provider, visibility))
-        return "audience 'public' is not permitted"
+    def _record(*_a):
+        on_loop.append(threading.current_thread() is loop_thread)
+        return None
 
-    monkeypatch.setattr(art_handlers, "_publish_audience_denied", _audience)
-    dispatched = AsyncMock()
-    monkeypatch.setattr(publish_sync, "publish", dispatched)
-    monkeypatch.setattr(publish_sync, "update_sharing", dispatched)
+    monkeypatch.setattr(art_handlers, "_publish_governance_denied", _record)
+    monkeypatch.setattr(publish_sync, "publish", AsyncMock())
     art = store.create(name="Doc", content="x", kind="html")
-
-    for handler in (art_handlers.api_artifact_publish, art_handlers.api_artifact_update_sharing):
-        resp = await handler(_request(match={"slug": art.slug}, body={"visibility": "PUBLIC"}))
-        assert resp.status == 403
-    assert asked == [("default", "PUBLIC"), ("default", "PUBLIC")]
-    dispatched.assert_not_awaited()
-
-
-def test_audience_is_asked_lower_case(monkeypatch) -> None:
-    from kiro_crew.dashboard.handlers.artifacts_parts import route_plumbing
-
-    seen: list[tuple] = []
-    monkeypatch.setattr(
-        route_plumbing, "publish_list_denied_reason", lambda *a: seen.append(a) or None
-    )
-    request = SimpleNamespace(headers={"X-Session-Key": "k"})
-    assert route_plumbing._publish_audience_denied(request, "default", "SHARED") is None
-    assert seen == [("k", "default", "audience", "shared")]
-
-
-@pytest.mark.asyncio
-async def test_republish_asks_the_current_audience_too(tmp_path, monkeypatch) -> None:
-    """New bytes reach the old audience first, so a narrower request is not enough."""
-    from test_artifact_sharing_handlers import _request
-
-    from kiro_crew import artifacts as art_mod
-    from kiro_crew.artifacts import ArtifactStore
-    from kiro_crew.dashboard.handlers import artifacts as art_handlers
-
-    store = ArtifactStore(root=tmp_path / "artifacts")
-    monkeypatch.setattr(art_mod, "_default_store", store)
-    monkeypatch.setattr(art_handlers, "_is_restricted_session", lambda *_a: False)
-    monkeypatch.setattr(art_handlers, "_publish_governance_denied", lambda *_a: None)
-    monkeypatch.setattr(
-        art_handlers,
-        "_publish_audience_denied",
-        lambda _r, _p, v: "no" if v.upper() == "PUBLIC" else None,
-    )
-    dispatched = AsyncMock()
-    monkeypatch.setattr(publish_sync, "publish", dispatched)
-    art = store.create(name="Doc", content="x", kind="html")
-    from kiro_crew.artifact_store.model import ArtifactPublication
-
-    store.set_publication(
-        art.slug, ArtifactPublication(artifact_id="e", view_url="u", visibility="PUBLIC")
-    )
-    resp = await art_handlers.api_artifact_publish(
+    await art_handlers.api_artifact_publish(
         _request(match={"slug": art.slug}, body={"visibility": "PRIVATE"})
     )
-    assert resp.status == 403
-    dispatched.assert_not_awaited()
+    assert on_loop == [False]
 
 
-@pytest.mark.asyncio
-async def test_auto_sync_push_asks_the_current_audience(tmp_path, monkeypatch) -> None:
-    """A snapshot on an auto-sync publication pushes nothing to a denied audience."""
-    from test_artifact_sharing_handlers import _request
-
-    from kiro_crew import artifacts as art_mod
-    from kiro_crew.artifact_store.model import ArtifactPublication
-    from kiro_crew.artifacts import ArtifactStore
-    from kiro_crew.dashboard.handlers import artifacts as art_handlers
-
-    store = ArtifactStore(root=tmp_path / "artifacts")
-    monkeypatch.setattr(art_mod, "_default_store", store)
-    monkeypatch.setattr(art_handlers, "_is_restricted_session", lambda *_a: False)
-    monkeypatch.setattr(art_handlers, "_publish_governance_denied", lambda *_a: None)
-    asked: list[str] = []
-
-    def _audience(_r, _p, visibility):
-        asked.append(visibility)
-        return "no"
-
-    monkeypatch.setattr(art_handlers, "_publish_audience_denied", _audience)
-    push = AsyncMock()
-    monkeypatch.setattr(publish_sync, "push_version_by_slug", push)
-    art = store.create(name="P", content="v1", kind="html")
-    store.set_publication(
-        art.slug,
-        ArtifactPublication(artifact_id="e", view_url="u", visibility="SHARED", auto_sync=True),
+def test_list_probe_disabled_gate_is_not_open(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None
     )
-    resp = await art_handlers.api_artifact_update(
-        _request(body={"content": "v2", "snapshot": True}, match={"slug": art.slug})
-    )
-    assert resp.status == 200
-    assert asked == ["SHARED"]
-    push.assert_not_awaited()
+    ctx = SimpleNamespace(governance=_ceiling({"enabled": False}))
+    monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: ctx)
+    assert not pg.publish_list_unrestricted("s", "accounts")
+
+
+def test_deploy_web_id_skips_the_list_refusal_only_on_the_core_path(monkeypatch) -> None:
+    """An app can declare the same id; only the caller that checks the lists skips."""
+    request = _gate_permits(monkeypatch)
+    monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, n: n != "regions")
+    assert "regions" in (pg.publish_denied_reason(request, "deploy-web-aws") or "")
+    assert pg.publish_denied_reason(request, "deploy-web-aws", lists_checked_by_caller=True) is None

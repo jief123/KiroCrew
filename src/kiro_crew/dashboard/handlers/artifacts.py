@@ -214,7 +214,6 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _json_response,
         _non_owner_refusal,
         _notify_artifact_update,
-        _publish_audience_denied,
         _publish_governance_denied,
         _read_json_body,
         _resolve_folder_ref,
@@ -279,7 +278,6 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.hooks import stat_identity  # noqa: F401
     from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
     from kiro_crew.publish_governance import publish_denied_reason  # noqa: F401
-    from kiro_crew.publish_governance import publish_list_denied_reason  # noqa: F401
     from kiro_crew.publish_provider import DEFAULT_PROVIDER  # noqa: F401
     from kiro_crew.publish_provider import Capability  # noqa: F401
     from kiro_crew.publish_provider import CommentAnchor  # noqa: F401

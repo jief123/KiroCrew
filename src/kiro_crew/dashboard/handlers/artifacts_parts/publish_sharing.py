@@ -28,7 +28,6 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
-    _publish_audience_denied,
     _publish_governance_denied,
     _read_json_body,
     _run_off_loop,
@@ -170,13 +169,9 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     # Governance chokepoint (Plane-C): the capabilities.publish ceiling + the
     # operator destination allowlist gate publishing here — the host PreToolUse
     # gate never sees this HTTP action. Runs BEFORE any provider dispatch.
-    gov_denial = _publish_governance_denied(request, effective_provider)
-    if gov_denial is None:
-        gov_denial = _publish_audience_denied(request, effective_provider, visibility)
-    if gov_denial is None and existing_pub is not None:
-        # A re-publish pushes the new bytes while the old audience still applies
-        # (and keeps it when the destination cannot change sharing), so ask both.
-        gov_denial = _publish_audience_denied(request, effective_provider, existing_pub.visibility)
+    gov_denial = await _run_off_loop(
+        lambda: _publish_governance_denied(request, effective_provider)
+    )
     if gov_denial is not None:
         _audit(
             tool="artifact_publish",
@@ -245,9 +240,7 @@ async def api_artifact_update_sharing(request: web.Request) -> web.Response:
     share_provider = (
         existing_pub.provider if existing_pub and existing_pub.provider else DEFAULT_PROVIDER
     )
-    gov_denial = _publish_governance_denied(request, share_provider)
-    if gov_denial is None:
-        gov_denial = _publish_audience_denied(request, share_provider, visibility)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, share_provider))
     if gov_denial is not None:
         _audit(
             tool="artifact_update_sharing",
@@ -589,12 +582,9 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
         if existing.publication is not None and existing.publication.provider
         else DEFAULT_PROVIDER
     )
-    gov_denial = _publish_governance_denied(request, overwrite_provider)
-    if gov_denial is None and existing.publication is not None:
-        # The new bytes reach whoever the publication is already shared with.
-        gov_denial = _publish_audience_denied(
-            request, overwrite_provider, existing.publication.visibility
-        )
+    gov_denial = await _run_off_loop(
+        lambda: _publish_governance_denied(request, overwrite_provider)
+    )
     if gov_denial is not None:
         _audit(
             tool="artifact_overwrite_remote",

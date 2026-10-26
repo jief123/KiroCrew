@@ -149,19 +149,6 @@ async def _resolve_profile(params: dict[str, Any]) -> tuple[str, str]:
     return resolved
 
 
-def _deploy_account(profile: str) -> str:
-    """The account id *profile*'s credentials resolve to, or ``""`` if unreadable.
-
-    Read from the credentials (``sts get-caller-identity``), not from the profile
-    registry's ``account`` field, which is display metadata a caller can edit.
-    """
-    rc, out, _err = engine.run_aws(
-        ["sts", "get-caller-identity", "--query", "Account", "--output", "text"], profile, 15
-    )
-    account = (out or "").strip() if rc == 0 else ""
-    return account if profiles_mod._ACCOUNT_RE.match(account) else ""
-
-
 def _safe_site_id(raw: str) -> str:
     """Normalize a site id to a tag/label-safe slug."""
     s = "".join(c if (c.isalnum() or c in "-_") else "-" for c in (raw or "").strip().lower())
@@ -191,11 +178,8 @@ async def _do_deploy(
 
     # The policy's publish lists (audience, regions, accounts), asked before any
     # content is staged or uploaded, on preview and again on confirm. Off the
-    # loop: it reads policy and profiles from disk, and the account read is a
-    # cloud call.
-    denied = await asyncio.to_thread(
-        deploy_target_denied_reason, session_key, region, lambda: _deploy_account(profile)
-    )
+    # loop: it reads policy and profiles from disk.
+    denied = await asyncio.to_thread(deploy_target_denied_reason, session_key, region)
     if denied:
         _audit("deploy", str(params.get("site_id", "")), "denied", error=denied)
         return 403, {

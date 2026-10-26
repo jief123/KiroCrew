@@ -249,7 +249,11 @@ async def _handle_deploy(request: web.Request) -> web.Response:
     # this request — the provider-registry call site is offloaded for the same
     # reason.
     reason = await asyncio.to_thread(
-        publish_denied_reason, request, DEPLOY_WEB_PROVIDER_ID
+        publish_denied_reason,
+        request,
+        DEPLOY_WEB_PROVIDER_ID,
+        # _do_deploy checks the publish lists itself.
+        lists_checked_by_caller=True,
     )
     if reason:
         _audit("deploy", "", "denied", error=reason)
@@ -983,7 +987,11 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
     # entry intact rather than consuming it. Off the loop for the same reason as
     # the deploy handler — the decision reads policy, profiles and config from disk.
     reason = await asyncio.to_thread(
-        publish_denied_reason, request, DEPLOY_WEB_PROVIDER_ID
+        publish_denied_reason,
+        request,
+        DEPLOY_WEB_PROVIDER_ID,
+        # _do_deploy checks the publish lists itself.
+        lists_checked_by_caller=True,
     )
     if reason:
         _audit("pending_confirm", request.match_info.get("id", ""), "denied", error=reason)
@@ -1393,7 +1401,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.deploy.handlers_sites import (  # noqa: F401
         _SITE_ID_MAX,
-        _deploy_account,
         _safe_site_id,
     )
 

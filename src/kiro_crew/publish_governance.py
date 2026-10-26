@@ -37,7 +37,6 @@ module checks parseability itself rather than inheriting that degrade.
 from __future__ import annotations
 
 import logging
-from typing import Callable
 
 from aiohttp import web
 
@@ -60,10 +59,12 @@ DEPLOY_WEB_PROVIDER_ID = "deploy-web-aws"
 #: Who can read a public web deploy: anyone with the link.
 DEPLOY_WEB_AUDIENCE = "public"
 
-#: Destinations that write into the operator's cloud account but do not report their
-#: region or account to this module yet. While a policy bounds either list they are
-#: refused, because a list that cannot be checked must not read as satisfied.
-_UNCHECKED_CLOUD_DESTINATIONS = frozenset({"personal-drive"})
+#: The lists only the public web deploy checks today. Every other destination
+#: (artifact publish, the drives) is refused unless each of these lists permits
+#: every value: those paths take their target from ``meta.json``, which an agent
+#: can write and ``publish_sync`` reads again after this check, so a
+#: value-by-value check there is not yet sound.
+_DEPLOY_ONLY_LISTS = ("regions", "audience", "accounts")
 
 _SCOPE = "capabilities.publish"
 
@@ -165,7 +166,9 @@ def _read_allowed_destinations() -> tuple[list[str], str | None]:
     return list(cfg.publish.allowed_destinations), None
 
 
-def publish_denied_reason(request: web.Request, provider_name: str) -> str | None:
+def publish_denied_reason(
+    request: web.Request, provider_name: str, *, lists_checked_by_caller: bool = False
+) -> str | None:
     """Return a denial reason for publishing to ``provider_name``, else ``None``.
 
     Callers turn a non-``None`` reason into a 403 (or, for a provider *listing*,
@@ -244,12 +247,15 @@ def publish_denied_reason(request: web.Request, provider_name: str) -> str | Non
             logger.debug("publish governance degrade audit unavailable", exc_info=True)
         return "publishing denied: governance could not be evaluated"
 
-    if provider_name in _UNCHECKED_CLOUD_DESTINATIONS:
-        for list_name in ("regions", "accounts"):
-            if publish_list_governed(session_key, list_name):
+    # Only the core deploy path checks the lists value by value, so only it may
+    # skip this refusal. An app can declare a row under the same id, and its
+    # endpoint never reaches ``_do_deploy``.
+    if not (provider_name == DEPLOY_WEB_PROVIDER_ID and lists_checked_by_caller):
+        for list_name in _DEPLOY_ONLY_LISTS:
+            if not publish_list_unrestricted(session_key, list_name):
                 reason = (
-                    f"publishing to {provider_name!r} denied: the policy bounds deploy "
-                    f"{list_name}, and this destination cannot report its {list_name} yet"
+                    f"publishing to {provider_name!r} denied: the policy bounds "
+                    f"{list_name}, and only the public web deploy can check it yet"
                 )
                 _audit_deny(
                     session_key=session_key,
@@ -301,13 +307,35 @@ def publish_denied_reason(request: web.Request, provider_name: str) -> str | Non
     return None
 
 
-def publish_list_governed(session_key: str, list_name: str) -> bool:
-    """Whether the policy or the active profile bounds publish's *list_name* list.
+def _ruleset_unrestricted(ruleset: object) -> bool:
+    """Whether *ruleset* permits every value, the unknown one included.
 
-    Lets a caller skip work that only a bounded list needs, such as the cloud call
-    that reads a deploy's account id. ``True`` when either level carries the list,
-    when a level carries something other than a capability gate, and when the
-    question cannot be answered: the caller then does the work and asks.
+    Only a deny list with no entries, or an allow list naming ``*``, does. A
+    composed ruleset does when both halves do; any other shape counts as
+    restricting, so an unknown kind fails closed.
+    """
+    from kiro_crew.platform.governance import ScopedRuleset, _AndRuleset
+
+    if isinstance(ruleset, _AndRuleset):
+        return _ruleset_unrestricted(ruleset.outer) and _ruleset_unrestricted(ruleset.inner)
+    if isinstance(ruleset, ScopedRuleset):
+        if ruleset.mode == "deny":
+            return not ruleset.deny
+        # Every publish list uses the ``identifier`` matcher; a literal ``*`` is
+        # the one entry read as "every value". Anything else counts as restricting.
+        return ruleset.matcher == "identifier" and "*" in ruleset.allow
+    return False
+
+
+def publish_list_unrestricted(session_key: str, list_name: str) -> bool:
+    """Whether publish's *list_name* list permits every value at both levels.
+
+    Asks what the list allows, not whether it is present: in an enterprise build
+    every list is present (the baseline fills it), so presence says nothing. A
+    level with no ``capabilities.publish`` control, or one without the list,
+    leaves it open at that level; a disabled gate permits nothing. ``False``
+    when the question cannot be answered, so a caller that needs an open list
+    refuses.
     """
     from kiro_crew.platform.context import PlatformCompositionError, current_context
 
@@ -325,11 +353,16 @@ def publish_list_governed(session_key: str, list_name: str) -> bool:
         raise
     except Exception:
         logger.debug("publish list probe failed; treating %s as bounded", list_name, exc_info=True)
-        return True
-    return any(
-        level is not None and (not isinstance(level, CapabilityGate) or list_name in level.scopes)
-        for level in levels
-    )
+        return False
+    for level in levels:
+        if level is None:
+            continue
+        if not isinstance(level, CapabilityGate) or not level.enabled:
+            return False
+        ruleset = level.scopes.get(list_name)
+        if ruleset is not None and not _ruleset_unrestricted(ruleset):
+            return False
+    return True
 
 
 def publish_list_denied_reason(
@@ -368,38 +401,32 @@ def publish_list_denied_reason(
     return f"{list_name} {value!r} is not permitted: {reason}"
 
 
-def deploy_target_denied_reason(
-    session_key: str, region: str, account_of: Callable[[], str]
-) -> str | None:
+def deploy_target_denied_reason(session_key: str, region: str) -> str | None:
     """Return a denial reason for a public web deploy to *region*, else ``None``.
 
-    Asks, in order: ``audience:public`` (a web deploy is world-readable),
-    ``regions:<region>``, then ``accounts:<id>``. The account is read through
-    *account_of* only when a policy or profile bounds ``accounts``
-    (:func:`publish_list_governed`), so an unbounded deploy makes no extra cloud
-    call. An account that cannot be read denies. Blocking.
+    Asks ``audience:public`` (a web deploy is world-readable), then
+    ``regions:<region>``. A deploy is refused outright while ``accounts``
+    restricts anything: every AWS call in a deploy resolves the profile by name
+    again, so an account read once cannot bind the credentials the upload uses.
+    Blocking.
     """
     provider = DEPLOY_WEB_PROVIDER_ID
     for list_name, value in (("audience", DEPLOY_WEB_AUDIENCE), ("regions", region)):
         reason = publish_list_denied_reason(session_key, provider, list_name, value)
         if reason:
             return reason
-    if not publish_list_governed(session_key, "accounts"):
+    if publish_list_unrestricted(session_key, "accounts"):
         return None
-    try:
-        account = account_of()
-    except Exception:
-        logger.debug("deploy account lookup failed; failing closed", exc_info=True)
-        account = ""
-    if not account:
-        reason = "accounts: the deploy account could not be read, so it cannot be checked"
-        _audit_deny(
-            session_key=session_key,
-            provider_name=provider,
-            rule="accounts",
-            layer="policy",
-            reason=reason,
-            item="accounts:",
-        )
-        return reason
-    return publish_list_denied_reason(session_key, provider, "accounts", account)
+    reason = (
+        "the policy bounds deploy accounts, and binding a deploy to one account "
+        "is not supported yet"
+    )
+    _audit_deny(
+        session_key=session_key,
+        provider_name=provider,
+        rule="accounts",
+        layer="policy",
+        reason=reason,
+        item="accounts:",
+    )
+    return reason
