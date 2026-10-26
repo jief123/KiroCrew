@@ -98,6 +98,7 @@ from kiro_crew.crew_log.entry_types_ledgers import (  # noqa: F401
     RADAR_SKIP_SCOPES,
     RADAR_TERMINAL_PHASES,
     RADAR_TTL_ACTIVE_PHASES,
+    WORK_CHARGE_ENTRY_TYPE,
     WORK_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.entry_types_lifecycle import ACTOR_VALUES  # noqa: F401

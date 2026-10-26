@@ -338,13 +338,6 @@ def test_a_warm_header_indexed_baseline_reads_only_the_entries_appended_since(me
     assert meter.opens <= UNITS_IN_SLOT + OPEN_SLACK, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="full log walk to resolve the work fold's units on every read: "
-    "projection_readers._slot_units_for_fold -> projection_work._work_units walks "
-    "iter_from(1) of every conductor unit for bind entries; fixed by the work-fold own-units redesign "
-    "(PR pending, supersedes #24285; crew_log/projection_work.py)",
-)
 def test_a_warm_baseline_reads_only_the_entries_appended_since(meter):
     """A second subscriber on a warm board reads what was appended, not the slot."""
     units = _board_slot()
@@ -359,14 +352,6 @@ def test_a_warm_baseline_reads_only_the_entries_appended_since(meter):
     assert meter.hashed <= ENTRY_SLACK, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="full log walk to resolve the workstreams fold's units on every read: "
-    "projection_workstreams._workstreams_units -> _board_closure_units -> "
-    "projection_work._work_units and _workstreams_binds_in walk iter_from(1) of every "
-    "unit for bind entries; fixed by the work-fold own-units redesign "
-    "(PR pending, supersedes #24285; crew_log/projection_workstreams.py)",
-)
 def test_a_warm_workstreams_baseline_reads_only_the_entries_appended_since(meter):
     units = _board_slot()
     _subscribe_baseline("workstreams")

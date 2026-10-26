@@ -337,7 +337,7 @@ Moved by: `dashboard/agentic_refused`.
 
 Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session.
 
-Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subagent/failed`, `turn/completed`, `work/recorded`.
+Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subagent/failed`, `turn/completed`, `work/charged`, `work/recorded`.
 
 | Field | Type | Optional |
 |---|---|---|

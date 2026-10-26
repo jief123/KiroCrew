@@ -33,6 +33,7 @@ from kiro_crew.dashboard.handlers.work_ledger_recording import (
     _baseline_overflows,
     _board_header,
     _board_lock,
+    _conductor_unit,
     _crew_store,
     _current_item_and_board,
     _drain_before_cancelling,
@@ -217,6 +218,9 @@ async def api_work_report(request: web.Request) -> web.Response:
         event_kind="report",
         event_id=_WIDEST_HEX_ID,
         event_ts=_WIDEST_STAMP,
+        # Both copies' marks, so the probe is as wide as either copy.
+        board_copy=True,
+        mirror=True,
     )
     if invalid is not None:
         return invalid
@@ -239,6 +243,8 @@ async def api_work_report(request: web.Request) -> web.Response:
             event_kind="report",
             event_id=_WIDEST_HEX_ID,
             event_ts=_WIDEST_STAMP,
+            board_copy=True,
+            mirror=True,
         ):
             return _refuse_item_too_large(key, "work_report", item_id)
         _audit(key, "work_report", "denied", resources=item_id, error="work_entry_too_large")
@@ -287,31 +293,76 @@ async def api_work_report(request: web.Request) -> web.Response:
             # The entry carries what the COMMIT holds, not what the request said: an
             # omitted `artifacts` clears the map, and the fold reads an absent field as
             # unchanged, so only the committed value keeps the rebuild equal to the cache.
-            landed = await asyncio.to_thread(
-                crew_log_emit.on_work_recorded,
-                acting_unit,
-                _entry_with_baseline(
-                    conductor_key,
-                    item,
-                    board,
-                    actor="worker",
-                    by=caller,
-                    action="report",
-                    item_id=item.item_id,
-                    generation=getattr(board, "generation", None) or None,
-                    round=item.round,
-                    status=item.status,
-                    reason=item.reason,
-                    summary=item.summary,
-                    artifacts=item.artifacts,
-                    pr=item.pr,
-                    last_report_at=item.last_report_at,
-                    event=getattr(result.get("event"), "text", None),
-                    event_kind="report",
-                    event_id=getattr(result.get("event"), "id", None) or None,
-                    event_ts=getattr(result.get("event"), "ts", None) or None,
-                ),
+            entry = _entry_with_baseline(
+                conductor_key,
+                item,
+                board,
+                actor="worker",
+                by=caller,
+                action="report",
+                item_id=item.item_id,
+                generation=getattr(board, "generation", None) or None,
+                round=item.round,
+                status=item.status,
+                reason=item.reason,
+                summary=item.summary,
+                artifacts=item.artifacts,
+                pr=item.pr,
+                last_report_at=item.last_report_at,
+                event=getattr(result.get("event"), "text", None),
+                event_kind="report",
+                event_id=getattr(result.get("event"), "id", None) or None,
+                event_ts=getattr(result.get("event"), "ts", None) or None,
             )
+            # The board's own copy, in the CONDUCTOR's log, FIRST: the board's folds read
+            # the conductor's units and no worker's, so this is the copy the board is
+            # rebuilt from, and the report has happened exactly when it lands. The gateway
+            # is that log's one writer, as it is for a bind or a decide.
+            parent_unit = await asyncio.to_thread(_conductor_unit, state, conductor_key)
+            if not parent_unit:
+                # The board has no unit of its own to record into (its conductor's logs
+                # are gone). The worker's copy is then the only record, as it always was.
+                landed = await asyncio.to_thread(crew_log_emit.on_work_recorded, acting_unit, entry)
+            else:
+                # Marked as the board's copy: the operator's rebuild also joins worker
+                # logs, and the mark is how it tells this authoritative copy from a
+                # worker-log one (a mirror, or a report from before board copies).
+                board_copy = {**entry, "board_copy": True}
+                landed = await asyncio.to_thread(
+                    crew_log_emit.on_work_recorded, parent_unit, board_copy
+                )
+                if not landed:
+                    # The live unit may have no log yet (a session just switched agents,
+                    # before its first turn); the slot's newest unit that has one takes it.
+                    from kiro_crew import session_ledger
+
+                    fallback = await asyncio.to_thread(
+                        session_ledger.newest_work_unit, conductor_key
+                    )
+                    if fallback and fallback != parent_unit:
+                        parent_unit = fallback
+                        landed = await asyncio.to_thread(
+                            crew_log_emit.on_work_recorded, parent_unit, board_copy
+                        )
+                    elif not fallback:
+                        # No unit of the board's own has a log: the worker's copy is the
+                        # record, exactly as when no conductor unit is named at all.
+                        parent_unit = ""
+                        landed = await asyncio.to_thread(
+                            crew_log_emit.on_work_recorded, acting_unit, entry
+                        )
+            if landed and parent_unit and parent_unit != acting_unit:
+                # The worker's own copy, marked as a mirror of the board's. Nothing reads
+                # it to rebuild the board, so a failure here is logged and the report
+                # stands.
+                mirrored = await asyncio.to_thread(
+                    crew_log_emit.on_work_recorded, acting_unit, {**entry, "mirror": True}
+                )
+                if not mirrored:
+                    logger.warning(
+                        "work report for %s landed on the board; the worker's copy did not",
+                        item.item_id,
+                    )
             if not landed:
                 return await _refuse_unrecorded(
                     caller, "work_report", item.item_id, conductor_key, snapshot

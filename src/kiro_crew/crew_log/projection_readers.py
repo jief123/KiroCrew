@@ -29,7 +29,6 @@ from kiro_crew.crew_log.projection_kernel import Checkpoint, advance, projection
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session_log import open_session_log
 from kiro_crew.crew_log.projection_slot_memo import fold_slot_warm_revised
-from kiro_crew.crew_log.projection_work import _work_units
 from kiro_crew.crew_log.projection_workers import (
     merge_render,
     tree_seeded,
@@ -251,6 +250,39 @@ def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
     return session_units_for_slot(slot)
 
 
+#: Each slot's newest unit, keyed by the slot's unit listing it was computed from. The
+#: listing comes from the store's slot index, which re-checks a unit whose header was
+#: still unpublished when it was listed, so a unit that becomes provable later changes
+#: the key even though the root's stat does not move.
+_NEWEST_UNITS: "dict[str, tuple[tuple[Any, ...], str]]" = {}
+_NEWEST_UNITS_LIMIT = 1024
+_newest_units_guard = threading.Lock()
+
+
+def newest_unit_in_succession(slot: str) -> str:
+    """The last of :func:`units_in_succession` for *slot*, or ``""``; cached on its units.
+
+    A unit's place in the succession is written once (header, opening entry), so the
+    answer can only change when the slot's set of units does.
+    """
+    if not slot:
+        return ""
+    identity: "tuple[Any, ...]" = (str(data_home()), session_units_for_slot(slot))
+    with _newest_units_guard:
+        held = _NEWEST_UNITS.get(slot)
+    if held is not None and held[0] == identity:
+        return held[1]
+    units = units_in_succession(slot)
+    unit = units[-1] if units else ""
+    if unit:
+        with _newest_units_guard:
+            _NEWEST_UNITS.pop(slot, None)
+            _NEWEST_UNITS[slot] = (identity, unit)
+            while len(_NEWEST_UNITS) > _NEWEST_UNITS_LIMIT:
+                _NEWEST_UNITS.pop(next(iter(_NEWEST_UNITS)))
+    return unit
+
+
 def units_in_succession(slot: str) -> "tuple[str, ...]":
     """The slot's session units ordered by DURABLE succession rather than by the clock.
 
@@ -353,14 +385,15 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
     if name == LEDGER_FOLD_NAME:
         return session_ledger.crew_log_units(slot)
     if name == "work":
-        return _work_units(slot, session_ledger.work_crew_log_units(slot))
+        # The board's OWN units and nothing else. A bound worker's report is written by
+        # the gateway into the conductor's unit as well as the worker's
+        # (``api_work_report``), so the board is complete without reading -- or walking
+        # the binds to find -- any worker's log.
+        return session_ledger.work_crew_log_units(slot)
     if name == WORKSTREAMS_FOLD_NAME:
-        # The same units the ``work`` fold reads -- the conductor's, then every bound
-        # worker's -- because one session appends its work records AND its turn closers
-        # to one crew log, so the files carrying the boards are the files carrying the
-        # spend. No wider: the fold answers for the boards THIS slot reaches, and
-        # reading a slot nothing here binds would be a scan for data no reader asked
-        # for.
+        # The board's own units, like ``work``: a bound worker's charges and a nested
+        # board's records are relayed into them (``work_relay``), so the project report
+        # needs no worker's log.
         return _workstreams_units(slot)
     if name == WORKERS_FOLD_NAME:
         # The crewmate's own units: its creates. Each worker's own log is read by that

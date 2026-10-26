@@ -105,6 +105,8 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
     {
         _CLOSED_TYPE,
         "work/recorded",
+        # The project report reads the charges the gateway relays into a board's log.
+        "work/charged",
         "panel/published",
         "ledger/recorded",
         "radar/recorded",
@@ -151,9 +153,9 @@ class _Wake(NamedTuple):
     ``board`` is the slot whose fold this entry belongs to, and it has to be carried
     rather than derived. A unit's HEADER names the slot that unit ran under, which for a
     conductor's own entry is the board -- but a worker's ``work/recorded`` names the
-    CONDUCTOR's board in its own ``slot`` field and reaches that fold only by joining it
-    (``_work_units``). Resolving the header instead advances the worker's own board and
-    leaves the conductor's -- the one a dashboard reads -- exactly as stale as before. The
+    CONDUCTOR's board in its own ``slot`` field, and the gateway writes the board's own
+    copy of it into the conductor's unit. Resolving the header for the worker's copy
+    would advance the worker's own board rather than the one a dashboard reads. The
     emitter holds the entry, so it is the one place the board is free to read; empty means
     "the unit's header names it", which is true of every type that carries no board of its
     own.

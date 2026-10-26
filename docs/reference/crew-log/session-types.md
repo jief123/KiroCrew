@@ -60,6 +60,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`object/observed`](#objectobserved) | The state of an object outside the session, as a named producer observed it. | live | `gateway` | — |
 | [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
 | [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
+| [`work/charged`](#workcharged) | One bound worker's charge, relayed by the gateway into the board's own log. | live | `gateway` | — |
 | [`panel/published`](#panelpublished) | One publish of a crew's own webview: the data, and the template that renders it. | live | `gateway` | — |
 | [`dashboard/instance_changed`](#dashboardinstance_changed) | One mate dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
 | [`dashboard/agentic_value`](#dashboardagentic_value) | One agent-written dynamic dashboard value. | live | `gateway` | — |
@@ -1439,9 +1440,11 @@ One work-board mutation: who acted, on which item, and the fields it set.
 
 **When written** — One entry per work-ledger write, appended to the ACTING
 session's log: a conductor action (`work_ledger_record`) or a worker report
-(`work_report`). The `work` fold rebuilds the board from these entries across the
-conductor's and its bound workers' units, so the ledger's files are a cache of the
-log rather than a record beside it; the routes still read that cache.
+(`work_report`). A worker report is written a second time into the conductor's own
+log, and the gateway relays a sub-board's entries into its parent board's log (with
+`relay` set). The `work` fold rebuilds the board from the conductor's own units
+alone, so the ledger's files are a cache of the log rather than a record beside it;
+the routes still read that cache.
 
 **Pairing** — None.
 
@@ -1480,6 +1483,9 @@ log rather than a record beside it; the routes still read that cache.
 | `board_created_at` | string | optional | The board's committed creation stamp, carried by a baseline entry. | |
 | `goal_version` | int | optional | The header's goal-write count after this write, set by `goal`. | |
 | `baseline` | bool | optional | `true` when the entry carries the WHOLE committed item rather than a delta. | |
+| `board_copy` | bool | optional | True on the copy of a worker's report the gateway wrote into the board's own log. A report without it is a worker-log copy, which the rebuild's join of worker logs never lets undo a board copy. | |
+| `mirror` | bool | optional | True on the worker's own copy of a report whose board copy landed. The work and worktree folds skip it (the board copy is the record); the workers fold reads it as the worker's own report. | |
+| `relay` | string | optional | Set on a copy relayed up from a sub-board's log into its parent board's log: the origin entry as `<unit>:<seq>`. | |
 
 **Invariants** — A delta: only the fields the one `action` set are present,
 except on a baseline entry. A conductor entry never carries a worker field and a
@@ -1506,12 +1512,43 @@ and `board_created_at`.
 {"type":"work/recorded","seq":72,"time":1789000002600,"src":"gateway","data":{"slot":"dashboard:3","actor":"worker","by":"dashboard:9","action":"report","item_id":"it_0badc0de","status":"progress","summary":"scoped tests green, opening the PR next","artifacts":{"branch":"feat/x","pr":"123"},"pr":123,"event":"progress: scoped tests green","event_kind":"report"}}
 ```
 
-**Reader hint** — One board spans several logs: the conductor slot's units and each
-bound worker slot's units. Fold them all, oldest unit first, and key items by
-`item_id`; a report seen before its item's `create` belongs to a unit the reader has
-not folded yet, not to a missing item.
+**Reader hint** — A board is folded from the conductor slot's own units, oldest
+first, keyed by `item_id`. A bound worker's report reaches them as the board's own
+copy; an open bound item with no report there yet is waiting for the worker's next
+report. A sub-board's entries arrive with `relay` set and their own `slot`.
 
 **Since** — #12314.
+
+### `work/charged`
+
+One bound worker's charge, relayed by the gateway into the board's own log.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When a `turn/completed`, `subagent/completed`, `subagent/failed`
+or `background/completed` entry that bills credits or measures time lands in a
+session bound to a work item, the gateway appends one `work/charged` entry into the
+newest unit of the board that bound it. A board whose conductor is itself bound to a
+parent board relays each `work/charged` it receives up into the parent's log. The
+`workstreams` fold costs tasks from these, so it reads the board's own units only.
+
+**Pairing** — Copies the closer named by `closer`.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slot` | string | required | The board whose log this copy lands in: the conductor slot. | |
+| `by` | string | required | The worker session key that incurred the charge. | |
+| `source` | string | required | Which kind of closer carried the charge. | `turn`, `subagent`, `background` (closed) |
+| `closer` | string | required | The closer this copies, as `<unit>:<seq>` of the worker's log. | |
+| `credits` | float | optional | What the closer billed. Absent is not zero. | |
+| `duration_ms` | int | optional | How long the closer's work ran. | |
+
+**Invariants** — A reader bills one closer once however many copies of it reach a
+log (`closer` is the identity), so a retried or doubly relayed copy costs nothing.
+
+```json
+{"type":"work/charged","seq":81,"time":1789000003100,"src":"gateway","data":{"slot":"dashboard:3","by":"dashboard:9","source":"turn","closer":"acp-worker:41","credits":0.25,"duration_ms":1200}}
+```
 
 ## The member panel
 

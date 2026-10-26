@@ -252,6 +252,14 @@ CANONICAL: dict[str, dict] = {
         "event": "progress: scoped tests green",
         "event_kind": "report",
     },
+    "work/charged": {
+        "slot": "dashboard:3",
+        "by": "dashboard:9",
+        "source": "turn",
+        "closer": "acp-worker:41",
+        "credits": 0.25,
+        "duration_ms": 1200,
+    },
     "panel/published": {
         "template": "default",
         "data": {"cycle": 47, "waiting_on_you": 1, "holding": 6},
@@ -420,7 +428,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     #
     # The one past those is ``context/measured``: the agent engine's own measurement of
     # a turn's context, which the ``usage`` fold attaches to that turn's composition row.
-    assert len(SESSION_ENTRY_TYPES) == 48
+    assert len(SESSION_ENTRY_TYPES) == 49
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.
@@ -489,6 +497,9 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         ("radar/recorded", "phase"),
         ("radar/recorded", "scope"),
         ("radar/recorded", "event_kind"),
+        # The relay sets ``source`` from its own closer-type table, so no other value
+        # can reach the entry.
+        ("work/charged", "source"),
         # The work ledger clamps every one of these before it builds the entry:
         # the vocabularies are declared beside the type and the writer imports
         # them, so the closed enum and the writer's refusal are one set.
@@ -611,11 +622,13 @@ def _types_the_writers_append() -> dict[str, bool]:
 
 def _writer_files():
     """The writers' source files: the emitter facade with its ``emit_*.py`` owners, its
-    durable writer, and the store facade with its ``store_*.py`` owners, where the
-    crash-repair closer lives."""
-    emit_files = sorted(Path(emit.__file__).parent.glob("emit*.py"))
+    durable writer, the work relay that appends copies into a board's log, and the store
+    facade with its ``store_*.py`` owners, where the crash-repair closer lives."""
+    crew_log_dir = Path(emit.__file__).parent
+    emit_files = sorted(crew_log_dir.glob("emit*.py"))
     store_files = sorted(Path(store_mod.__file__).parent.glob("store*.py"))
-    return [*emit_files, Path(writer_mod.__file__), *store_files]
+    relay = crew_log_dir / "work_relay.py"
+    return [*emit_files, Path(writer_mod.__file__), relay, *store_files]
 
 
 def _walk(fields):

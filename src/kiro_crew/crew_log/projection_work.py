@@ -142,7 +142,13 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
                 continue
             names_board = False
             for entry in handle.iter_from(1, known=KNOWN_TYPES):
-                if entry.type == WORK_ENTRY_TYPE and _as_str(entry.data.get("slot")) == slot:
+                if (
+                    entry.type == WORK_ENTRY_TYPE
+                    and _as_str(entry.data.get("slot")) == slot
+                    and not entry.data.get("relay")
+                ):
+                    # A relayed copy sits in a PARENT board's log; that parent is no
+                    # party to this board's records, and its copies are not originals.
                     names_board = True
                     break
             if names_board:
@@ -163,6 +169,9 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
 #: full fold that reports omissions, because only such a fold may be a prefix of the
 #: board.
 WORK_ITEM_LIMIT: Final[int] = WORK_STORED_ITEM_LIMIT
+
+#: The summary an open, bound item renders before any report has reached the board's log.
+WORK_AWAITING_REPORT: Final[str] = "waiting for next report"
 
 #: The states an item closes in; the writer's ``TERMINAL_ITEM_STATES``.
 _WORK_CLOSED_STATES: Final[tuple[str, ...]] = ("accepted", "rejected", "abandoned")
@@ -311,6 +320,11 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     if entry.type != WORK_ENTRY_TYPE:
         return
     data = entry.data
+    if data.get("relay"):
+        # A sub-board's record copied up into a parent's log, for the parent's report
+        # fold. The sub-board's own units hold the original; a fold that meets the copy
+        # too (the rebuild joining the parent) must not apply it twice.
+        return
     if not state["slot"]:
         # Unbound (a caller that folded units without naming the board): only a
         # conductor's OWN action names its board. A report this session filed
@@ -367,11 +381,10 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     # eventually reads as stale while it is in fact current.
     #
     # The GREATEST accepted stamp, not the last one written, because the fold order is
-    # by UNIT and never by time: ``_work_units`` yields the conductor's units first and
-    # then each bound worker's, so a worker report appended before the conductor's
-    # latest round is folded after it. An unconditional write hands the board that older
-    # stamp, the age inflates to the gap between the two, and a current board reads as
-    # stale -- reproducibly, since the log order never changes. Scoped to the current
+    # by UNIT and never by time: a board's units are folded one after another, so an
+    # entry appended before another unit's latest round can be folded after it. An
+    # unconditional write hands the board that older stamp, the age inflates to the gap
+    # between the two, and a current board reads as stale -- reproducibly, since the log order never changes. Scoped to the current
     # board generation for free: the reset above runs first and clears both keys, so a
     # purged board's newest stamp cannot pin a board born after it.
     if entry.time >= state["last_entry_ms"]:
@@ -582,11 +595,23 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     entries in either relative order yields the same fields -- which is what lets
     one board be folded unit by unit when the units interleave in time. The event
     tail is the one place order shows, and it is kept in time order on insert.
+
+    The operator's rebuild also joins worker logs, so a report can be met twice. The
+    board's copy (``board_copy``) is always applied, in the board's log order. The
+    worker's mirror of it (``mirror``) is never applied: the board's copy already was.
+    Any other worker-log report predates board copies (or was written when the board
+    had no unit): it is applied as before until the item holds a board copy, and adds
+    only its event line after that, so it cannot undo a newer report.
     """
     action = _as_str(data.get("action"))
     actor = _as_str(data.get("actor"))
     if actor == "worker":
-        if action != "report":
+        if action != "report" or data.get("mirror") is True:
+            return
+        if data.get("board_copy") is True:
+            item["_board_reported"] = True
+        elif item.get("_board_reported"):
+            _work_apply_event(item, data, stamp_ms, action)
             return
         for name in _WORK_WORKER_FIELDS:
             if name in data:
@@ -615,6 +640,13 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         elif action == "accept":
             # A pending run belongs to the bar it measured; the new bar starts its own.
             item["pending_since"] = None
+    _work_apply_event(item, data, stamp_ms, action)
+
+
+def _work_apply_event(
+    item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int, action: str
+) -> None:
+    """*data*'s event line onto *item*'s tail, when it carries one."""
     kind = _as_str(data.get("event_kind"))
     if not kind:
         return
@@ -722,9 +754,21 @@ def _work_render(state: dict[str, Any]) -> WorkBoardView:
         if item is None:
             continue
         rendered = {
-            key: value for key, value in item.items() if key != "events" and key != "_unrecorded"
+            key: value
+            for key, value in item.items()
+            if key not in ("events", "_unrecorded", "_board_reported")
         }
         rendered["schema"] = 1
+        if (
+            item["state"] not in _WORK_CLOSED_STATES
+            and item["worker_session_key"]
+            and item["status"] is None
+            and not item["summary"]
+        ):
+            # Bound, open, and no report in this board's own log yet: the worker has not
+            # reported since its reports began landing here. Said in the summary, which a
+            # reader shows, rather than in ``status``, whose values are the worker's own.
+            rendered["summary"] = WORK_AWAITING_REPORT
         rendered["events"] = [
             {key: value for key, value in event.items() if key != "_t"} for event in item["events"]
         ]

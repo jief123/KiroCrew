@@ -391,20 +391,17 @@ def test_a_fold_after_an_eager_fold_parses_no_entries(parsed):
     assert cold_cost >= 41, f"the cold fold parses the whole unit, measured {cold_cost}"
 
 
-def test_a_binding_recorded_after_a_warm_read_still_reaches_the_workers_unit():
-    """The cached unit list is re-resolved when a conductor unit grows.
+def test_a_report_in_the_workers_log_alone_never_reaches_the_board():
+    """The board reads its conductor's units only.
 
-    What keeps the ``work`` unit-list cache from being a correctness bug. A worker's
-    report lives in the WORKER's log, and the only record that the worker belongs to
-    this board is a ``bind`` entry in the conductor's log -- so a list cached before the
-    bind would leave that worker's units out of the fold for as long as it was held. The
-    guard is the conductor unit's own stat fingerprint, which an append moves.
+    A bind in the conductor's log does not pull the bound worker's log into the
+    fold: the gateway writes the board's own copy of each report into the conductor's
+    log, so the worker's copy is never read, and the open item waits for that copy.
     """
     conductor_slot = WORK_SLOT
     worker_slot = "dashboard:31"
     conductor = _slot_log("s-conductor", conductor_slot)
     _work_entry(conductor, "it-1")
-    # Warm the unit list while the board has no workers at all.
     assert crew_log.read_slot_projection(conductor_slot, "work").value["items"]
 
     worker = _slot_log("s-worker", worker_slot)
@@ -434,14 +431,9 @@ def test_a_binding_recorded_after_a_warm_read_still_reaches_the_workers_unit():
         src=GATEWAY,
     )
 
-    folded = crew_log.read_slot_projection(conductor_slot, "work")
-    item = folded.value["items"][0]
-    assert item["status"] == "done", "the newly bound worker's report reached the fold"
-
-
-# --------------------------------------------------------------------------- #
-# The production wiring
-# --------------------------------------------------------------------------- #
+    item = crew_log.read_slot_projection(conductor_slot, "work").value["items"][0]
+    assert item["status"] is None
+    assert item["summary"] == crew_log.WORK_AWAITING_REPORT
 
 
 def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
@@ -554,9 +546,8 @@ def test_a_worker_report_advances_the_conductors_board_not_its_own():
     """The board comes from the ENTRY, never from the unit's header.
 
     A worker's log header names the worker's own slot, while its ``work/recorded`` names
-    the conductor's board and reaches that fold only by being joined into it. Folding by
-    the header advances a board nobody reads and leaves the conductor's -- the one the
-    dashboard reads -- exactly as stale as it was.
+    the conductor's board. Folding by the header advances a board nobody reads and leaves
+    the conductor's -- the one the dashboard reads -- exactly as stale as it was.
     """
     conductor_slot = WORK_SLOT
     worker_slot = "dashboard:51"
@@ -575,19 +566,18 @@ def test_a_worker_report_advances_the_conductors_board_not_its_own():
         },
         src=GATEWAY,
     )
-    report = worker.append(
-        "work/recorded",
-        {
-            "slot": conductor_slot,
-            "actor": "worker",
-            "by": worker_slot,
-            "action": "report",
-            "item_id": "it-1",
-            "status": "done",
-            "summary": "the worker reported",
-        },
-        src=GATEWAY,
-    )
+    report_data = {
+        "slot": conductor_slot,
+        "actor": "worker",
+        "by": worker_slot,
+        "action": "report",
+        "item_id": "it-1",
+        "status": "done",
+        "summary": "the worker reported",
+    }
+    report = worker.append("work/recorded", report_data, src=GATEWAY)
+    # The board's own copy, in the conductor's log, as the report route writes it.
+    conductor.append("work/recorded", report_data, src=GATEWAY)
 
     eager.note_commit("s-w-board", "work/recorded", int(report.seq), board=conductor_slot)
     assert eager.drain(timeout=10.0)

@@ -144,6 +144,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _baseline_overflows,
         _board_header,
         _board_lock,
+        _conductor_unit,
         _crew_store,
         _current_item_and_board,
         _drain_before_cancelling,

@@ -1432,6 +1432,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         "dashboard/handlers/work_ledger_recording.py",
         "dashboard/handlers/work_ledger_refusals.py",
         "dashboard/handlers/work_ledger_worker.py",
+        # The crew-log relay reads ONE thing, the binding of the session whose closer
+        # just landed, to know which board's log to copy the charge into. The worker
+        # named there is the unit's own header slot, never a caller-supplied value,
+        # and the relay writes nothing to the store.
+        "crew_log/work_relay.py",
         # The operator-run cleanup sweep behind ``kirocrew ledger-sweep``.
         # It is a seam deliberately, and it does not weaken the rule the
         # allowlist exists for: it resolves NO caller identity — there is no

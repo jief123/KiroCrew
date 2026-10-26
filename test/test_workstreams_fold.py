@@ -167,13 +167,13 @@ def test_the_rendered_keys_are_the_spec_keys() -> None:
 
 
 def test_the_fold_never_reads_the_whole_log() -> None:
-    """``affects`` is the four entry types the fold reads, and nothing wider.
+    """``affects`` is the entry types the fold reads, and nothing wider.
 
     The kernel wakes a fold only for the types it declares, so this set IS the
     guarantee that a report entry does not cost a pass over every line.
     """
     assert projection.WORKSTREAMS_TYPES == frozenset(
-        {WORK_ENTRY_TYPE, "session/opened"}
+        {WORK_ENTRY_TYPE, "work/charged", "session/opened"}
         | {"turn/completed", "subagent/completed", "subagent/failed", "background/completed"}
     )
     assert projection._FOLDS["workstreams"].affects == projection.WORKSTREAMS_TYPES
@@ -837,7 +837,7 @@ def test_a_board_three_conductors_down_is_costable_not_only_listed(
             "sub-worker": [],
         },
     )
-    units = projection._workstreams_units(CONDUCTOR)
+    units = projection._board_closure_units(CONDUCTOR)[0]
     assert units == (
         f"u-{CONDUCTOR}",
         f"u-{WORKER_A}",
@@ -859,7 +859,7 @@ def test_the_walk_stops_at_the_unit_ceiling_not_at_a_depth(
         monkeypatch,
         {f"s{i}": [(f"it_{i}", f"s{i + 1}")] for i in range(depth)} | {f"s{depth}": []},
     )
-    units = projection._workstreams_units("s0")
+    units = projection._board_closure_units("s0")[0]
     assert len(units) == projection.WORKSTREAMS_UNIT_LIMIT
 
 
@@ -872,7 +872,7 @@ def test_a_bind_cycle_does_not_walk_forever(monkeypatch: pytest.MonkeyPatch) -> 
             WORKER_A: [("it_2", CONDUCTOR)],
         },
     )
-    assert projection._workstreams_units(CONDUCTOR) == (
+    assert projection._board_closure_units(CONDUCTOR)[0] == (
         f"u-{CONDUCTOR}",
         f"u-{WORKER_A}",
     )
@@ -1341,7 +1341,7 @@ def test_direct_workers_are_capped_before_their_logs_are_opened(
         "work_crew_log_units",
         lambda slot: (f"u-{slot}",),
     )
-    units = projection._workstreams_units(CONDUCTOR)
+    units = projection._board_closure_units(CONDUCTOR)[0]
     assert len(units) == projection.WORKSTREAMS_UNIT_LIMIT
     # Opens are bounded by what is RETAINED, not by what was offered: the 562
     # candidates must not each cost a log read. The ceiling plus one is the real
@@ -1459,7 +1459,7 @@ def test_a_baseline_only_binding_still_collects_that_workers_units(
         "work_crew_log_units",
         lambda slot: (f"u-{slot}",) if slot in (CONDUCTOR, WORKER_A) else (),
     )
-    assert projection._workstreams_units(CONDUCTOR) == (f"u-{CONDUCTOR}", f"u-{WORKER_A}")
+    assert projection._board_closure_units(CONDUCTOR)[0] == (f"u-{CONDUCTOR}", f"u-{WORKER_A}")
 
 
 def test_nested_board_units_refused_by_the_ceiling_are_counted_too(
@@ -1477,7 +1477,7 @@ def test_nested_board_units_refused_by_the_ceiling_are_counted_too(
         monkeypatch,
         {f"s{i}": [(f"it_{i}", f"s{i + 1}")] for i in range(depth)} | {f"s{depth}": []},
     )
-    units = projection._workstreams_units("s0")
+    units = projection._board_closure_units("s0")[0]
     assert len(units) == projection.WORKSTREAMS_UNIT_LIMIT
     # Each round offers one unit, so the refusals are the rounds past the ceiling.
-    assert projection._workstreams_units_dropped("s0") > 0
+    assert projection._board_closure_units("s0")[1] > 0

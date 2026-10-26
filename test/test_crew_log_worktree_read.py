@@ -255,19 +255,20 @@ def test_the_read_does_not_steal_the_workstreams_folds_refused_count() -> None:
     assert crew_log._workstreams_units_dropped(ROOT) == 7
 
 
-def test_the_extracted_walk_and_the_workstreams_selector_agree() -> None:
-    """The refactor is behaviour-preserving, pinned rather than asserted.
+def test_the_workstreams_selector_reads_only_the_roots_own_units() -> None:
+    """The tree walk reaches every board's units; the project report reads the root's.
 
-    ``_workstreams_units`` is now a thin caller of ``_board_closure_units``, so the units
-    it selects must be the walk's own and in the same order -- otherwise the workstreams
-    fold's answer changed under a change that was supposed to be about a different fold.
+    The project report is folded from the root board's own units, into which the gateway
+    relays what it needs from below (``work_relay``), so its selection must not grow with
+    the fleet the tree walk reaches.
     """
     _three_board_fleet()
-    walked, dropped = crew_log._board_closure_units(ROOT)
+    walked, _dropped = crew_log._board_closure_units(ROOT)
     crew_log._WORKSTREAMS_UNITS_DROPPED.clear()
     selected = crew_log._workstreams_units(ROOT)
-    assert selected == walked
-    assert crew_log._workstreams_units_dropped(ROOT) == dropped
+    assert selected == crew_log.session_ledger.work_crew_log_units(ROOT)
+    assert set(selected) < set(walked)
+    assert crew_log._workstreams_units_dropped(ROOT) == 0
 
 
 def test_the_bound_path_of_a_validated_block_resolves_against_the_folded_value() -> None:
