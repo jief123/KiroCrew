@@ -380,11 +380,10 @@ class TestOwnerOnlyDaclPredicate:
 class TestRestrictToOwner:
     """Fail-loud owner-only lockdown used by every ~/.kirocrew secret writer.
 
-    The review finding was that the earlier
-    ``if IS_POSIX: os.chmod(...)`` guard left Windows with NO per-file owner-only
-    restriction on the token signing key, per-app secrets, refresh-token state,
-    snapshot tarball, and cron internal-secret temp file — a secret-at-rest
-    posture regression. ``restrict_to_owner`` closes that: POSIX chmod 0o600,
+    A bare ``if IS_POSIX: os.chmod(...)`` guard would leave Windows with NO per-file
+    owner-only restriction on the token signing key, per-app secrets, refresh-token
+    state, snapshot tarball, and cron internal-secret temp file.
+    ``restrict_to_owner`` covers both: POSIX chmod 0o600,
     Windows an owner-only DACL applied via icacls (S-1-3-4 = Owner Rights).
     """
 

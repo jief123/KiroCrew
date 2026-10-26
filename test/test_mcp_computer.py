@@ -1013,9 +1013,9 @@ def test_sel_records_a_tool_invocation_on_success(
 def test_sel_records_a_PRE_GATE_refusal(keystone: Path, fake_backend: FakeComputerUseBackend):
     """The audit hole between the gate's denials and ``_audit_allowed``.
 
-    Reviewer finding: a schema ``ValidationError``, an unknown tool, a bad
-    ``click_method``, a stale index, an unparseable key and the paste refusal all
-    return WITHOUT reaching the gate — so nothing was recorded. An audit trail with a
+    A schema ``ValidationError``, an unknown tool, a bad ``click_method``, a stale
+    index, an unparseable key and the paste refusal all return WITHOUT reaching the
+    gate, so they must record themselves. An audit trail with a
     gap at "malformed or refused attempts" is the wrong shape here: a burst of them is
     exactly the signal an investigation wants.
     """
@@ -1079,11 +1079,9 @@ def test_an_audit_failure_never_turns_a_refusal_into_a_crash(
 def test_every_refusal_exit_goes_through_an_AUDITED_helper():
     """Structural: no refusal may return ``Error: …`` inline.
 
-    Reviewer finding, twice — first the ``_refusal`` path, then six static pre-gate
-    sites that returned ``f"{ERROR_PREFIX}{…}"`` directly and so produced no SEL
-    record. Behavioural tests can only cover the refusals someone thought to write a
-    case for, which is exactly how the second batch survived the first fix. This
-    asserts over the AST instead: the ONLY functions allowed to build that string are
+    A site that returns ``f"{ERROR_PREFIX}{…}"`` directly produces no SEL record.
+    Behavioural tests can only cover the refusals someone thought to write a case
+    for, so this asserts over the AST instead: the ONLY functions allowed to build that string are
     the two helpers that audit first.
     """
     import ast

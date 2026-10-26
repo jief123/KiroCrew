@@ -1,4 +1,4 @@
-"""Subprocess-spawn audit — security-review finding 92e24570.
+"""Subprocess-spawn audit.
 
 Every subprocess spawn in ``src/kiro_crew`` must be either
 

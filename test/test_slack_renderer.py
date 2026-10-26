@@ -1554,8 +1554,7 @@ class TestRendererPresentationGuards:
         """Stream start, placeholder post AND the final direct post all raise:
         nothing was delivered, so the raise must PROPAGATE — the transport
         catch-all recording a failure is the honest outcome. Swallowing here
-        would convert total delivery failure into recorded success (a
-        review finding)."""
+        would convert total delivery failure into recorded success."""
         import pytest
 
         class TotalFailureSlack(_RecSlack):
