@@ -1407,9 +1407,9 @@ async def install_from_registry(
                         "the install did not complete",
                     )
             except Exception:  # noqa: BLE001 - never mask the outcome being returned
-                # WARNING, not debug: this catch is what hid the KeyError above for
-                # four review rounds. A restoration that could not run is a possible
-                # data loss, so it has to be visible in the log the user sees.
+                # WARNING, not debug: a quiet catch here hides errors like the KeyError
+                # above. A restoration that could not run is a possible data loss, so
+                # it has to be visible in the log the user sees.
                 logger.warning(
                     "could not restore the moved-aside checkout for %r", name, exc_info=True
                 )

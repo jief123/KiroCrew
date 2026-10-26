@@ -213,7 +213,7 @@ async def teardown_app_runtime(
     # metadata claims otherwise.
     #
     # `withdrawing_trust` overrides EVERYTHING here, and that resolves a genuine
-    # tension between two opposite review findings about this exact line:
+    # tension between two opposite risks on this exact line:
     #
     #   (a) "revoking a disabled app LAUNCHES its code" — the security operation
     #       becoming a way to execute the app.
