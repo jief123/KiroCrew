@@ -643,9 +643,8 @@ class TestGitExecNeutralizers:
 class TestNoTestSideEffects:
     """Every git subprocess in THIS file must carry the sanitized environment.
 
-    `no-test-side-effects`, and it has now recurred four times across review rounds
-    (GIT_TEMPLATE_DIR, then GIT_DIR in the fixtures, then a control probe, then
-    seven bare calls at once). The failure is always the same: an inherited
+    `no-test-side-effects`: a fixture, a control probe or a bare call can each miss
+    it (GIT_TEMPLATE_DIR, GIT_DIR). The failure is always the same: an inherited
     ``GIT_DIR`` points a probe at an operator's real repository, where `git status`
     can invoke THAT repo's configured fsmonitor -- a host-side side effect from
     running the test suite, outside ``tmp_path``.

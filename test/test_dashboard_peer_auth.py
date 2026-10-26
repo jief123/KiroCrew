@@ -113,7 +113,7 @@ def test_resolve_peer_identity_cycle_terminates(tmp_path: Path) -> None:
 def test_signed_only_refuses_forged_unsigned_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REGRESSION (review finding): the bare .txt is same-uid agent-writable,
+    """The bare .txt is same-uid agent-writable,
     so an attacker planting session_pid_<own_pid>.txt with a victim's key
     must NOT satisfy the authorization walk — signed_only requires the HMAC
     sidecar the attacker cannot produce."""
@@ -1367,7 +1367,7 @@ async def test_unix_site_end_to_end_peer_verification(
 def test_check_origin_trusts_unix_transport_without_origin() -> None:
     """An AF_UNIX request has no loopback request.remote; without this trust
     the CSRF middleware would 403 every mutating internal call on the socket
-    before token auth ever ran (review finding)."""
+    before token auth ever ran."""
     from kiro_crew.dashboard.origin import check_origin
 
     req, _store = _make_request(unix=True)

@@ -266,7 +266,7 @@ class TestTriageModel(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(slot.prompts, [])
 
     async def test_a_hand_pick_survives_watchdog_passes_and_wakes(self):
-        """The review finding: a model picked in the crew's session is the person's.
+        """A model picked in the crew's session is the person's.
 
         Neither a watchdog pass nor a wake switches over it, the switch back to the
         work model included, and the hold is put on the record so a restart keeps it.

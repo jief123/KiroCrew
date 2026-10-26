@@ -1141,11 +1141,10 @@ class TestTheRuntimeCallSitesAreWired:
 class TestTheSpawnHopCarriesTheSnapshot:
     """The warm rides in the hop ``_spawn`` already had, and adds no await.
 
-    The reviewer finding that produced this shape was specific: an added
-    ``await asyncio.to_thread`` on the Kiro construction path is a new suspension
-    point in service of a diagnostic (harness-parity H13). Folding the snapshot
-    into the pre-existing ``mkdir`` hop answers it by making the added await not
-    exist -- which is only true while nothing re-adds one, hence the structural
+    An added ``await asyncio.to_thread`` on the Kiro construction path would be
+    a new suspension point in service of a diagnostic (harness-parity H13).
+    Folding the snapshot into the pre-existing ``mkdir`` hop means no added await
+    exists -- which is only true while nothing re-adds one, hence the structural
     pin below.
     """
 

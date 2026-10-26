@@ -566,9 +566,8 @@ class TestSsmRegistry:
     def test_ssm_run_as_defaults_and_round_trips(self, tmp_path):
         """A record written before ssm_run_as existed must load as the default.
 
-        Regression guard for the design-review finding: the remote user was
-        hard-coded to ``ec2-user`` inside ``cloud.ssm.run_command``, so an Ubuntu
-        AMI's mint failed. It is now a per-instance field — but an older registry
+        The remote user is a per-instance field, because a hard-coded
+        ``ec2-user`` fails an Ubuntu AMI's mint — but an older registry
         file has no key at all, and a file with an explicit empty string would
         fail validation, so BOTH must resolve to the default.
         """
@@ -607,7 +606,7 @@ class TestSsmRegistry:
     def test_error_messages_carry_no_raw_regex(self, tmp_path):
         """Form errors must read in plain English, not as a regex.
 
-        UX-review finding: the pattern flowed verbatim into the Settings form.
+        The message is shown verbatim in the Settings form.
         """
         from kiro_crew.instances.registry import InvalidInstanceError
 

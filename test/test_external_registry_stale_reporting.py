@@ -276,7 +276,7 @@ class TestInstallFailureReportsStaleCheckout:
 
     @pytest.mark.asyncio
     async def test_traversing_subdirectory_restores_moved_aside_checkout(self, tmp_path):
-        """Self-review finding: a traversing ``subdirectory`` refused AFTER a
+        """A traversing ``subdirectory`` refused AFTER a
         successful branch-mismatch move-aside + clone + build must restore the
         moved-aside checkout, not strand it.
 

@@ -917,14 +917,14 @@ class TestReviewRegressions:
 
 
 class TestChildCapMarksTheWalkTruncated:
-    """The per-node child cap must not silently hide the tail (reviewer finding).
+    """The per-node child cap must not silently hide the tail.
 
-    ``MAX_CHILDREN_PER_NODE`` bounds one pathological container, but it dropped the
-    remaining children without setting any flag — so ``saw_secure`` reflected only
-    the first 512 while ``truncated`` stayed False, the walk reported itself
+    ``MAX_CHILDREN_PER_NODE`` bounds one pathological container. Dropping the
+    remaining children without setting any flag would leave ``saw_secure`` covering
+    only the first 512 while ``truncated`` stays False: the walk reports itself
     COMPLETE and non-secure, and ``capture_snapshot_image``'s fail-closed check (it
-    refuses to capture a truncated walk) had nothing to refuse on. A password field
-    as child 513 therefore left the whole window's pixels capturable.
+    refuses to capture a truncated walk) has nothing to refuse on. A password field
+    as child 513 would then leave the whole window's pixels capturable.
     """
 
     def _wide_window(self, fakes: _Fakes, count: int):
@@ -1163,10 +1163,9 @@ class TestReviewerFoundRegressions:
 class TestOverlayWindowsBlockPointerClicks:
     """A non-normal window over the target must REFUSE, not be skipped.
 
-    Reviewer finding, and a hole in the first version of ``pid_owns_point``: it
-    ``continue``d past non-layer-0 entries, so a notification banner or an open menu
-    sitting on top of the authorized app was ignored and the app UNDERNEATH granted
-    permission — for a click the overlay would actually have swallowed.
+    If ``pid_owns_point`` skipped non-layer-0 entries, a notification banner or an
+    open menu sitting on top of the authorized app would be ignored and the app
+    UNDERNEATH would grant permission — for a click the overlay actually swallows.
 
     ``list_apps`` still skips those layers, for the unrelated reason that they are
     not addressable TARGETS. The two functions answer different questions.
