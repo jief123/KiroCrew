@@ -224,8 +224,21 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # implements a destination is the orthogonal CPP PublishRegistry seam; this
     # gate only decides WHETHER + to WHERE.  Not a lever over ``git push`` (deny
     # floor) or ``network.egress`` (fetch host) — those are separate planes.
+    #
+    # Three more inner rulesets (RFC crew-enterprise-edition, appendix rows "Deploy
+    # regions", "Publish audiences", "Deploy accounts"), checked before anything is
+    # uploaded (``publish_governance``): ``regions`` (the cloud region a deploy
+    # writes to), ``audience`` (who may read the result: ``public``, ``shared`` or
+    # ``private``) and ``accounts`` (the cloud account id a deploy writes to).
     "capabilities.publish": ScopeSpec(
-        CAPABILITY, capability_default=False, scope_matchers={"destinations": "identifier"}
+        CAPABILITY,
+        capability_default=False,
+        scope_matchers={
+            "destinations": "identifier",
+            "regions": "identifier",
+            "audience": "identifier",
+            "accounts": "identifier",
+        },
     ),
     # Installed theme packs may ship a persona.md whose (consent-gated) text is
     # injected into the agent's FIRST turn — third-party text entering the

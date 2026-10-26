@@ -26,7 +26,7 @@ from kiro_crew.platform.governance_parts.archetypes import (
     ScopedRuleset,
     _compose_controls,
 )
-from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
+from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS, BASELINE_INNER_LISTS
 from kiro_crew.platform.governance_parts.carriers import (
     SIGNATURE_UNCHECKED,
     Bind,
@@ -370,6 +370,35 @@ def baseline_controls() -> Mapping[str, object]:
         scope: _parse_control(scope, SCOPE_CATALOG[scope], raw, is_policy=True)
         for scope, raw in BASELINE_CONTROLS.items()
     }
+
+
+@lru_cache(maxsize=1)
+def baseline_inner_lists() -> Mapping[str, Mapping[str, ScopedRuleset]]:
+    """``baseline.BASELINE_INNER_LISTS``, parsed with each scope's catalog matcher."""
+    parsed: Dict[str, Mapping[str, ScopedRuleset]] = {}
+    for scope, lists in BASELINE_INNER_LISTS.items():
+        matchers = SCOPE_CATALOG[scope].scope_matchers
+        parsed[scope] = {
+            name: ScopedRuleset.from_dict(raw, matcher=matchers[name])
+            for name, raw in lists.items()
+        }
+    return parsed
+
+
+def with_inner_baseline(scope: str, control: object) -> object:
+    """*control* with each ``BASELINE_INNER_LISTS`` list it does not name filled in.
+
+    For a remote policy's control in an enterprise build: a policy that names a
+    capability but not one of these inner lists gets the list's baseline, not an
+    open list. Any other control, or one naming every list, is returned as is.
+    """
+    lists = baseline_inner_lists().get(scope)
+    if not lists or not isinstance(control, CapabilityGate):
+        return control
+    missing = {name: rs for name, rs in lists.items() if name not in control.scopes}
+    if not missing:
+        return control
+    return CapabilityGate(enabled=control.enabled, scopes={**control.scopes, **missing})
 
 
 def parse_policy(

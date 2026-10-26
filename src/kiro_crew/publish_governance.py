@@ -33,9 +33,11 @@ than degrading to permit. That includes a config we cannot parse:
 present a narrowed ``allowed_destinations`` as the empty allow-all one, so this
 module checks parseability itself rather than inheriting that degrade.
 """
+
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from aiohttp import web
 
@@ -55,8 +57,25 @@ logger = logging.getLogger(__name__)
 DEPLOY_WEB_PROVIDER_ID = "deploy-web-aws"
 
 
+#: Who can read a public web deploy: anyone with the link.
+DEPLOY_WEB_AUDIENCE = "public"
+
+#: Destinations that write into the operator's cloud account but do not report their
+#: region or account to this module yet. While a policy bounds either list they are
+#: refused, because a list that cannot be checked must not read as satisfied.
+_UNCHECKED_CLOUD_DESTINATIONS = frozenset({"personal-drive"})
+
+_SCOPE = "capabilities.publish"
+
+
 def _audit_deny(
-    *, session_key: str, provider_name: str, rule: str, layer: str, reason: str
+    *,
+    session_key: str,
+    provider_name: str,
+    rule: str,
+    layer: str,
+    reason: str,
+    item: str = "",
 ) -> None:
     """Record ONE denial on the security event log; never raise.
 
@@ -72,8 +91,8 @@ def _audit_deny(
         _sel_mod.sel().log_governance_decision(
             session_key=session_key,
             tool_name=f"artifact_publish:{provider_name}",
-            scope="capabilities.publish",
-            item=f"destinations:{provider_name}",
+            scope=_SCOPE,
+            item=item or f"destinations:{provider_name}",
             outcome="denied",
             rule=rule,
             layer=layer,
@@ -225,6 +244,23 @@ def publish_denied_reason(request: web.Request, provider_name: str) -> str | Non
             logger.debug("publish governance degrade audit unavailable", exc_info=True)
         return "publishing denied: governance could not be evaluated"
 
+    if provider_name in _UNCHECKED_CLOUD_DESTINATIONS:
+        for list_name in ("regions", "accounts"):
+            if publish_list_governed(session_key, list_name):
+                reason = (
+                    f"publishing to {provider_name!r} denied: the policy bounds deploy "
+                    f"{list_name}, and this destination cannot report its {list_name} yet"
+                )
+                _audit_deny(
+                    session_key=session_key,
+                    provider_name=provider_name,
+                    rule=list_name,
+                    layer="policy",
+                    reason=reason,
+                    item=f"{list_name}:",
+                )
+                return reason
+
     # Config allowlist (default-open, narrow-only). Empty list allows any
     # registered destination; a non-empty list restricts to those provider ids.
     #
@@ -263,3 +299,107 @@ def publish_denied_reason(request: web.Request, provider_name: str) -> str | Non
             "— ask whoever administers this deployment, or see deploy-web.md §6.8"
         )
     return None
+
+
+def publish_list_governed(session_key: str, list_name: str) -> bool:
+    """Whether the policy or the active profile bounds publish's *list_name* list.
+
+    Lets a caller skip work that only a bounded list needs, such as the cloud call
+    that reads a deploy's account id. ``True`` when either level carries the list,
+    when a level carries something other than a capability gate, and when the
+    question cannot be answered: the caller then does the work and asks.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
+
+    try:
+        from kiro_crew.platform.governance import CapabilityGate, policy_level_control
+        from kiro_crew.platform.governance_profiles import resolve_active_scope
+
+        ceiling = getattr(current_context(), "governance", None)
+        profile = resolve_active_scope(session_key)
+        levels = (
+            policy_level_control(ceiling, _SCOPE),
+            profile.get(_SCOPE) if profile is not None else None,
+        )
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("publish list probe failed; treating %s as bounded", list_name, exc_info=True)
+        return True
+    return any(
+        level is not None and (not isinstance(level, CapabilityGate) or list_name in level.scopes)
+        for level in levels
+    )
+
+
+def publish_list_denied_reason(
+    session_key: str, provider_name: str, list_name: str, value: str
+) -> str | None:
+    """Return a denial reason when *value* is not in publish's *list_name* list.
+
+    Asks ``capabilities.publish`` item ``<list_name>:<value>`` (``regions``,
+    ``audience`` or ``accounts``) through the same fail-closed chokepoint as
+    :func:`publish_denied_reason`, and audits a refusal. ``None`` when permitted.
+    Blocking, like that function.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    item = f"{list_name}:{value}"
+    try:
+        from kiro_crew.platform.governance_profiles import governance_permits
+
+        decision = governance_permits(_SCOPE, item, session_key=session_key, fail_closed=True)
+        if getattr(decision, "permitted", False):
+            return None
+        reason = getattr(decision, "reason", "") or "not permitted by policy"
+        _audit_deny(
+            session_key=session_key,
+            provider_name=provider_name,
+            rule=getattr(decision, "rule", ""),
+            layer=getattr(decision, "layer", ""),
+            reason=reason,
+            item=item,
+        )
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("publish list governance failed; failing closed", exc_info=True)
+        reason = "governance could not be evaluated"
+    return f"{list_name} {value!r} is not permitted: {reason}"
+
+
+def deploy_target_denied_reason(
+    session_key: str, region: str, account_of: Callable[[], str]
+) -> str | None:
+    """Return a denial reason for a public web deploy to *region*, else ``None``.
+
+    Asks, in order: ``audience:public`` (a web deploy is world-readable),
+    ``regions:<region>``, then ``accounts:<id>``. The account is read through
+    *account_of* only when a policy or profile bounds ``accounts``
+    (:func:`publish_list_governed`), so an unbounded deploy makes no extra cloud
+    call. An account that cannot be read denies. Blocking.
+    """
+    provider = DEPLOY_WEB_PROVIDER_ID
+    for list_name, value in (("audience", DEPLOY_WEB_AUDIENCE), ("regions", region)):
+        reason = publish_list_denied_reason(session_key, provider, list_name, value)
+        if reason:
+            return reason
+    if not publish_list_governed(session_key, "accounts"):
+        return None
+    try:
+        account = account_of()
+    except Exception:
+        logger.debug("deploy account lookup failed; failing closed", exc_info=True)
+        account = ""
+    if not account:
+        reason = "accounts: the deploy account could not be read, so it cannot be checked"
+        _audit_deny(
+            session_key=session_key,
+            provider_name=provider,
+            rule="accounts",
+            layer="policy",
+            reason=reason,
+            item="accounts:",
+        )
+        return reason
+    return publish_list_denied_reason(session_key, provider, "accounts", account)

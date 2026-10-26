@@ -37,6 +37,7 @@ from kiro_crew.platform.governance_parts.parsing import (
     _read_json_file,
     baseline_controls,
     parse_policy,
+    with_inner_baseline,
 )
 from kiro_crew.platform.governance_parts.signature import _verify_policy_signature
 from kiro_crew.sel import sel
@@ -463,12 +464,13 @@ def _with_enterprise_baseline(authority: GovernanceCeiling) -> GovernanceCeiling
             named = merged.get(scope)
             merged[scope] = control if named is None else _compose_controls(control, named)
         return replace(authority, controls=merged)
-    missing = {
-        scope: control for scope, control in baseline.items() if scope not in authority.controls
-    }
-    if not missing:
+    # A named scope keeps the baseline of any inner list it leaves out
+    # (``BASELINE_INNER_LISTS``), so a local tier cannot supply that list either.
+    named = {scope: with_inner_baseline(scope, c) for scope, c in authority.controls.items()}
+    missing = {scope: control for scope, control in baseline.items() if scope not in named}
+    if not missing and all(named[s] is authority.controls[s] for s in named):
         return authority
-    return replace(authority, controls={**authority.controls, **missing})
+    return replace(authority, controls={**named, **missing})
 
 
 def _subordinate_ceiling(

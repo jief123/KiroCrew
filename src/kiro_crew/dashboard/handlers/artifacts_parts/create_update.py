@@ -45,6 +45,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
+    _publish_audience_denied,
     _publish_governance_denied,
     _read_json_body,
     _resolve_folder_ref_off_loop,
@@ -855,7 +856,12 @@ async def api_artifact_update(request: web.Request) -> web.Response:
     # Inert in the public edition (empty registry -> push_version_by_slug's
     # provider resolve raises PublishUnavailableError, swallowed here).
     if content_changed and snapshot and art.publication is not None and art.publication.auto_sync:
-        if _publish_governance_denied(request, art.publication.provider) is None:
+        provider = art.publication.provider
+        # The push reaches whoever the publication is shared with now.
+        if (
+            _publish_governance_denied(request, provider) is None
+            and _publish_audience_denied(request, provider, art.publication.visibility) is None
+        ):
             try:
                 await publish_sync.push_version_by_slug(art.slug)
             except Exception as exc:  # noqa: BLE001 - best-effort egress

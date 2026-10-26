@@ -1108,7 +1108,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CAPABILITY_OFF,
         _DEFAULT_WORKSPACE_ROOTS,
         _OFF,
+        _PUBLISH_LISTS_OFF,
         BASELINE_CONTROLS,
+        BASELINE_INNER_LISTS,
         BASELINE_UNGATED,
     )
     from kiro_crew.platform.governance_parts.carriers import (  # noqa: F401
@@ -1197,8 +1199,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parse_controls,
         _read_json_file,
         baseline_controls,
+        baseline_inner_lists,
         parse_policy,
         parse_profile,
+        with_inner_baseline,
     )
     from kiro_crew.platform.governance_parts.signature import (  # noqa: F401
         _audit_policy_signature,

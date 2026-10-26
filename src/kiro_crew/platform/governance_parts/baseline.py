@@ -11,7 +11,9 @@ document would carry for it, parsed by the same per-control parser a remote
 policy goes through. ``BASELINE_UNGATED`` lists the scopes that keep Crew's own
 default, with the reason. Every catalog scope (aliases aside) is in exactly one
 of the two; ``test_governance_enterprise_baseline.py`` fails on a new scope that
-is in neither.
+is in neither. ``BASELINE_INNER_LISTS`` holds the inner lists a remote policy
+must name itself: one it leaves out keeps its baseline even though it named the
+capability.
 
 Two rows differ from the appendix in detail. ``tools`` holds the LOCAL read-only
 built-ins only (``fs_read``, ``glob``, ``grep``): ``web_fetch`` and ``web_search``
@@ -30,6 +32,13 @@ from typing import Dict, Mapping
 
 _OFF: Mapping[str, object] = {"mode": "allow", "allow": []}
 _CAPABILITY_OFF: Mapping[str, object] = {"enabled": False}
+# The appendix rows "Deploy regions", "Publish audiences" and "Deploy accounts":
+# off, with no minimal set.
+_PUBLISH_LISTS_OFF: Mapping[str, Mapping[str, object]] = {
+    "regions": _OFF,
+    "audience": _OFF,
+    "accounts": _OFF,
+}
 
 # Crew's default workspace root: ``config.paths._default_workspace_base()`` joined
 # with ``_WORKSPACE_DIR_NAME``. The base is ``~/workplace`` everywhere, or
@@ -72,7 +81,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # ``publish_provider.DEFAULT_PROVIDER``.
     "capabilities.publish": {
         "enabled": True,
-        "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}},
+        "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}, **_PUBLISH_LISTS_OFF},
     },
     "capabilities.theme_persona": _CAPABILITY_OFF,
     "capabilities.theme_install": _CAPABILITY_OFF,
@@ -83,6 +92,14 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     "capabilities.decisions": _CAPABILITY_OFF,
     "capabilities.decisions_local": _CAPABILITY_OFF,
+}
+
+#: Inner lists of a capability that keep their baseline when the remote policy
+#: names the capability but not the list. Without this, a policy that turns
+#: ``publish`` on to name its destinations would leave every region, audience and
+#: account open, because an unnamed inner list permits.
+BASELINE_INNER_LISTS: Dict[str, Mapping[str, Mapping[str, object]]] = {
+    "capabilities.publish": _PUBLISH_LISTS_OFF,
 }
 
 BASELINE_UNGATED: Dict[str, str] = {

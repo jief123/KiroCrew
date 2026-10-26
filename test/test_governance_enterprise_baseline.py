@@ -49,7 +49,10 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "yolo_duration": ((), ("permanent", "until_shutdown", "1h")),
     "agent_backend": (("kiro",), ("claude", "kas")),
     "webhooks": ((), ("agent", "ops-mission-control")),
-    "capabilities.publish": (("", "destinations:default"), ("destinations:s3",)),
+    "capabilities.publish": (
+        ("", "destinations:default"),
+        ("destinations:s3", "regions:us-east-1", "audience:private", "accounts:123456789012"),
+    ),
 }
 
 

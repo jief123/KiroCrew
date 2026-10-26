@@ -34,7 +34,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
     _redact_text,
 )
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.publish_governance import publish_denied_reason
+from kiro_crew.publish_governance import publish_denied_reason, publish_list_denied_reason
 from kiro_crew.validation import infer_use_case
 
 
@@ -292,3 +292,19 @@ def _publish_governance_denied(request: web.Request, provider_name: str) -> str 
     artifact routes and their tests reference it directly.
     """
     return publish_denied_reason(request, provider_name)
+
+
+def _publish_audience_denied(
+    request: web.Request, provider_name: str, visibility: str
+) -> str | None:
+    """Deny reason when the policy's ``audience`` list refuses *visibility*.
+
+    Asked as ``audience:<public|shared|private>`` after the destination gate
+    permits, before any bytes or sharing change leave the box.
+    """
+    return publish_list_denied_reason(
+        request.headers.get("X-Session-Key") or "",
+        provider_name,
+        "audience",
+        (visibility or "").strip().lower(),
+    )

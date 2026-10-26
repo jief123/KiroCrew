@@ -68,7 +68,7 @@ def test_deploy_denied_when_destination_closed(monkeypatch):
     """A denied destination returns 403 and never reaches the deploy engine."""
     monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
 
-    async def _must_not_run(_params):  # pragma: no cover - reached only on regression
+    async def _must_not_run(_params, **_k):  # pragma: no cover - reached only on regression
         raise AssertionError("_do_deploy ran despite a denied destination")
 
     monkeypatch.setattr(handlers, "_do_deploy", _must_not_run)
@@ -86,7 +86,7 @@ def test_deploy_asks_about_the_deploy_web_destination(monkeypatch):
         return None
 
     monkeypatch.setattr(handlers, "publish_denied_reason", _record)
-    monkeypatch.setattr(handlers, "_do_deploy", lambda _p: _permitted())
+    monkeypatch.setattr(handlers, "_do_deploy", lambda _p, **_k: _permitted())
     _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     assert seen == ["deploy-web-aws"]
 
@@ -97,7 +97,7 @@ async def _permitted():
 
 def test_deploy_proceeds_when_permitted(monkeypatch):
     monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: None)
-    monkeypatch.setattr(handlers, "_do_deploy", lambda _p: _permitted())
+    monkeypatch.setattr(handlers, "_do_deploy", lambda _p, **_k: _permitted())
     resp = _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     assert resp.status == 200
 
@@ -348,7 +348,7 @@ def test_config_allowlist_reaches_the_deploy_endpoint(narrowed_allowlist, monkey
     allowlist) and is what actually proves the operator's knob is wired through.
     """
 
-    async def _must_not_run(_params):  # pragma: no cover - reached only on regression
+    async def _must_not_run(_params, **_k):  # pragma: no cover - reached only on regression
         raise AssertionError("_do_deploy ran despite a narrowed allowlist")
 
     monkeypatch.setattr(handlers, "_do_deploy", _must_not_run)
@@ -363,7 +363,7 @@ def test_deploy_permitted_when_allowlist_names_it(monkeypatch):
     cfg = KiroCrewConfig.load()
     cfg.publish = PublishConfig(allowed_destinations=["deploy-web-aws"])
     monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
-    monkeypatch.setattr(handlers, "_do_deploy", lambda _p: _permitted())
+    monkeypatch.setattr(handlers, "_do_deploy", lambda _p, **_k: _permitted())
     resp = _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     assert resp.status == 200
 
