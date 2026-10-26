@@ -632,6 +632,84 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
   })
 }
 
+/**
+ * Fold expanded content back to its tokens when the blocks' ORDER in the text
+ * is known, or refuse. `blocks` is the blocks in token order (the order the
+ * composer's display text had them); each body is looked for at or after the
+ * end of the one before it, so a body that is a prefix of a later sibling's
+ * cannot claim that sibling's start, and the later one cannot claim an earlier
+ * body plus the text after it. {@link recollapsePastes} cannot tell those
+ * apart from the text alone, which is fine for a bubble that only draws the
+ * chip; a surface that EDITS the folded text and expands the tokens again
+ * (the queue card) needs the attribution right, or a deleted token takes a
+ * sibling's text with it.
+ *
+ * The order alone does not settle a body that also stands in the text as
+ * plain words (a paste expanded in place, then pasted again collapsed): the
+ * token could sit on either copy, and an edit that deletes it would remove
+ * the wrong one. So the fold is accepted only when exactly ONE placement of
+ * all the blocks, in order, exists; a second complete placement refuses it.
+ * An occurrence inside a later sibling's body is not a second placement,
+ * because that sibling then finds no body after it.
+ *
+ * Verbatim first, then the body with trailing whitespace off (the gateway
+ * strips it from a stored message). Returns null when a body is not found in
+ * order, when the placement is ambiguous, or when the fold does not expand
+ * back to `content` (trailing whitespace aside), so the caller shows the
+ * text as sent instead.
+ */
+export function foldPastesInOrder(content: string, blocks: PasteBlock[]): string | null {
+  if (!content || !blocks.length || blocks.some(b => !b.content)) return null
+  const end = content.trimEnd().length
+  // Every place a body can stand at or after `from`: verbatim anywhere, and
+  // with its trailing whitespace off only where the text ENDS (the gateway
+  // strips trailing whitespace from the stored text, never from the middle).
+  // Both forms count toward uniqueness: a verbatim copy earlier in the text
+  // must not hide the stripped tail as the other possible placement.
+  const candidates = (body: string, from: number): Array<{ at: number; len: number }> => {
+    const out: Array<{ at: number; len: number }> = []
+    for (let i = content.indexOf(body, from); i >= 0; i = content.indexOf(body, i + 1)) out.push({ at: i, len: body.length })
+    const trimmed = body.trimEnd()
+    if (trimmed && trimmed !== body) {
+      const at = end - trimmed.length
+      if (at >= from && content.startsWith(trimmed, at) && !out.some(c => c.at === at)) out.push({ at, len: trimmed.length })
+    }
+    return out.sort((a, b) => a.at - b.at)
+  }
+  // Complete placements of blocks[i..] from `pos`, counted up to 2, with the
+  // first one found (leftmost first, in order). Memoized on (i, pos): many
+  // blocks with one body would otherwise re-walk the same failed tails.
+  type Placement = { count: number; first: Array<{ at: number; len: number }> | null }
+  const memo = new Map<string, Placement>()
+  const place = (i: number, pos: number): Placement => {
+    if (i === blocks.length) return { count: 1, first: [] }
+    const key = `${i}:${pos}`
+    const hit = memo.get(key)
+    if (hit) return hit
+    let count = 0
+    let first: Array<{ at: number; len: number }> | null = null
+    for (const c of candidates(blocks[i].content, pos)) {
+      const rest = place(i + 1, c.at + c.len)
+      if (rest.count && !first && rest.first) first = [c, ...rest.first]
+      count += rest.count
+      if (count >= 2) break
+    }
+    const result = { count, first }
+    memo.set(key, result)
+    return result
+  }
+  const { count, first } = place(0, 0)
+  if (count !== 1 || !first) return null
+  let out = ''
+  let pos = 0
+  first.forEach((c, i) => {
+    out += content.slice(pos, c.at) + formatToken(blocks[i])
+    pos = c.at + c.len
+  })
+  out += content.slice(pos)
+  return expandAll(out, blocks).trimEnd() === content.trimEnd() ? out : null
+}
+
 /* ---- localStorage side table: content-addressed paste preservation ---- */
 
 export const STORE_KEY = 'mc-paste-store-v1'

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   shouldCollapse,
   countLines,
@@ -11,6 +11,7 @@ import {
   pruneBlocks,
   expandAll,
   recollapsePastes,
+  foldPastesInOrder,
   mergePreservedPastes,
   saveStoredPaste,
   readStoredPaste,
@@ -265,11 +266,6 @@ describe('pasteTokens', () => {
       expect(out).toBe(formatToken(b))
       expect(out.length).toBeLessThan(64)
     })
-
-    // The backend strips trailing whitespace from the stored message, but the
-    // block content is stored verbatim. A paste that was the LAST thing in the
-    // message therefore keeps a trailing newline in block.content that the
-    // stored content no longer has — verbatim indexOf misses. The trimEnd()
     // fallback recovers it (else the huge paste falls through to raw markdown).
     it('matches a tail block whose trailing whitespace the backend stripped', () => {
       const b = block({ id: 'a', seq: 1, lines: 3, content: 'l1\nl2\nl3\n' })
@@ -292,6 +288,82 @@ describe('pasteTokens', () => {
       const stored = 'X\nY\nafter'
       expect(recollapsePastes(stored, [b])).toBe(`${formatToken(b)}after`)
     })
+  })
+
+  describe('foldPastesInOrder', () => {
+    const short = block({ id: 's', seq: 1, lines: 3, content: 'alpha\nbeta\ngamma' })
+    const long = block({ id: 'l', seq: 2, lines: 4, content: 'alpha\nbeta\ngamma\ndelta' })
+
+    it('is the inverse of expandAll for the token order it is given', () => {
+      for (const display of [
+        `before ${formatToken(short)} after`,
+        `${formatToken(long)}\n${formatToken(short)}`,
+        // The shorter body first, then typed text that completes the longer
+        // body, then the longer one: recollapsePastes cannot tell these apart.
+        `${formatToken(short)}\ndelta\n---\n${formatToken(long)}`,
+      ]) {
+        const order = findTokenRanges(display, [short, long]).map(r => r.block)
+        expect(foldPastesInOrder(expandAll(display, order), order)).toBe(display)
+      }
+    })
+
+    it('refuses when a body is missing or stands out of order', () => {
+      expect(foldPastesInOrder('nothing here', [short])).toBeNull()
+      expect(foldPastesInOrder(`${short.content} x ${long.content}`, [long, short])).toBeNull()
+      expect(foldPastesInOrder(short.content, [])).toBeNull()
+    })
+
+    it('refuses when the body also stands in the text as plain words, before or after the token', () => {
+      // A paste expanded in place, then pasted again collapsed: the token
+      // could sit on either copy, and deleting it would remove the wrong one.
+      expect(foldPastesInOrder(`${short.content}\ncompare with\n${short.content}`, [short])).toBeNull()
+      expect(foldPastesInOrder(`${short.content}\n${short.content}`, [short])).toBeNull()
+    })
+
+    it('accepts repeated sends of one paste: each copy has its own block', () => {
+      const twin = block({ id: 'w', seq: 2, lines: 3, content: short.content })
+      const display = `${formatToken(short)} x ${formatToken(twin)}`
+      expect(foldPastesInOrder(expandAll(display, [short, twin]), [short, twin])).toBe(display)
+    })
+
+    it('counts a stripped tail as the other possible placement of a body with trailing whitespace', () => {
+      // A raw copy of the body, whitespace included, then the collapsed paste
+      // at the end of the message, whose trailing space the gateway stripped:
+      // the verbatim copy must not hide the tail, or the token lands on the
+      // raw copy and deleting it removes the wrong one.
+      const spaced = block({ id: 'sp', seq: 1, lines: 3, content: 'alpha\nbeta\ngamma ' })
+      expect(foldPastesInOrder(`${spaced.content}\ncompare with\n${spaced.content.trimEnd()}`, [spaced])).toBeNull()
+      // Stripped whitespace is only ever at the end of the text.
+      expect(foldPastesInOrder(`${spaced.content.trimEnd()}\ncompare with`, [spaced])).toBeNull()
+    })
+
+    it('walks each failed tail once with many blocks sharing one body', () => {
+      const many = Array.from({ length: 28 }, (_, i) => block({ id: `m${i}`, seq: i + 1, lines: 3, content: 'alpha\nbeta\ngamma' }))
+      const display = many.map(formatToken).join('\n')
+      const expanded = expandAll(display, many)
+      // The work is counted, not timed: every candidate scan is a run of
+      // `indexOf` calls over the text, so the count of those calls is the
+      // search's size. Memoized on (block, position) it is bounded by blocks
+      // × positions × occurrences (28 × 29 × 29, under 24k); without the memo
+      // the same input re-walks every failed tail and the count explodes.
+      const indexOf = vi.spyOn(String.prototype, 'indexOf')
+      try {
+        expect(foldPastesInOrder(expanded, many)).toBe(display)
+        expect(indexOf.mock.calls.length).toBeLessThan(40_000)
+      } finally {
+        indexOf.mockRestore()
+      }
+    })
+
+    it('matches a tail body whose trailing whitespace the gateway stripped', () => {
+      const tail = block({ id: 't', seq: 3, lines: 2, content: 'l1\nl2\n' })
+      expect(foldPastesInOrder('see l1\nl2', [tail])).toBe(`see ${formatToken(tail)}`)
+    })
+
+    // The backend strips trailing whitespace from the stored message, but the
+    // block content is stored verbatim. A paste that was the LAST thing in the
+    // message therefore keeps a trailing newline in block.content that the
+    // stored content no longer has — verbatim indexOf misses. The trimEnd()
   })
 
   describe('mergePreservedPastes', () => {

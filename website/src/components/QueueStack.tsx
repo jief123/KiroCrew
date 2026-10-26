@@ -12,6 +12,7 @@ import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
 import { prependQuote, quoteBlock, quoteExcerpt, readMessageQuote, stripQuoteBlock } from '../chat-core/composer/messageQuote'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { splitKnowledgeEnvelope } from '../pages/chat/useKnowledgeFetch'
+import { expandAll, findTokenRanges, foldPastesInOrder, pruneBlocks, saveStoredPaste, type PasteBlock } from '../utils/pasteTokens'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
@@ -56,18 +57,75 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
  *  typed, so neither belongs on the card or in the editor. `quote` is set only
  *  when the content really starts with that quote's block, and `envelope` is
  *  the knowledge envelope as sent (empty when there is none), kept verbatim so
- *  an edit can put it back and the agent still receives the knowledge. */
+ *  an edit can put it back and the agent still receives the knowledge.
+ *
+ *  A collapsed `[ Paste #N ]` token is the third kind of model-only text, but
+ *  it expands IN PLACE with no marker around it, so the text alone cannot give
+ *  it back. The blocks ride the row as `meta.pastes` (`queueEntryPastes`: the
+ *  sending browser's paste side table, the same source the sent bubble is
+ *  re-collapsed from), and `own` folds each block's text back to its token
+ *  (`recollapsePastes`), so the card shows the token the bubble will show and
+ *  the editor opens on it. A row with no blocks shows the text as sent. */
 function splitQueuedContent(m: ChatMessage): {
   quote: ReturnType<typeof readMessageQuote>
   envelope: string
   own: string
+  pastes: PasteBlock[]
 } {
-  if (isAppMessageQueued(m)) return { quote: null, envelope: '', own: stripAppEnvelope(m.content) }
+  if (isAppMessageQueued(m)) return { quote: null, envelope: '', own: stripAppEnvelope(m.content), pastes: [] }
   const carried = readMessageQuote(m.meta as Record<string, unknown> | undefined)
   const quote = carried && m.content.startsWith(quoteBlock(carried)) ? carried : null
   const afterQuote = quote ? stripQuoteBlock(m.content, quote) : m.content
   const split = splitKnowledgeEnvelope(afterQuote)
-  return { quote, envelope: split?.head ?? '', own: split ? split.rest : afterQuote }
+  const expanded = split ? split.rest : afterQuote
+  const folded = foldQueuedPastes(expanded, queuedPastes(m))
+  return { quote, envelope: split?.head ?? '', own: folded?.own ?? expanded, pastes: folded?.pastes ?? [] }
+}
+
+/** How many remains of a `[ Paste #N ]` token `text` holds outside every
+ *  whole token: a fence of a token's invisible id run (U+2063, which no
+ *  script writes; the id bits between the fences, U+200B and U+200C, are
+ *  ordinary characters in Persian and other text and are NOT counted), or a
+ *  `[ Paste #` fragment. */
+function tokenRemains(text: string, pastes: PasteBlock[]): number {
+  let rest = ''
+  let pos = 0
+  for (const r of findTokenRanges(text, pastes)) {
+    rest += text.slice(pos, r.start)
+    pos = r.end
+  }
+  rest += text.slice(pos)
+  return (rest.match(/\u2063|\[ Paste #/g) ?? []).length
+}
+
+/** True when the edit left the remains of a token that no longer resolves to
+ *  a block: more token remains outside whole tokens than the text had when
+ *  the editor opened. The commit expands only whole tokens, so such a value
+ *  would send the broken text to the agent in place of the paste. Compared
+ *  against `initial`, not against zero, so what the typed words already held
+ *  can never block a commit. A value with no blocks behind it is never broken. */
+function hasBrokenToken(value: string, initial: string, pastes: PasteBlock[]): boolean {
+  return pastes.length > 0 && tokenRemains(value, pastes) > tokenRemains(initial, pastes)
+}
+
+/** Fold a queued entry's paste bodies back to their tokens, or refuse. The
+ *  row's blocks are in token order (`queueEntryPastes`), and the fold walks
+ *  the text in that order (`foldPastesInOrder`), so a body that is a prefix
+ *  of a sibling's lands on its own token: an edit commits by expanding the
+ *  tokens the editor shows, so a fold that attributed a body to the wrong
+ *  block would send text the user did not choose when they delete a token.
+ *  A refused fold (a body missing or out of order) shows the text as sent,
+ *  and the editor edits it as plain text, with no blocks to expand. */
+function foldQueuedPastes(expanded: string, pastes: PasteBlock[]): { own: string; pastes: PasteBlock[] } | null {
+  if (!pastes.length) return null
+  const own = foldPastesInOrder(expanded, pastes)
+  return own === null ? null : { own, pastes }
+}
+
+/** The paste blocks a queued row carries (`queueEntryPastes` put them there). */
+function queuedPastes(m: ChatMessage): PasteBlock[] {
+  const pastes = m.meta?.pastes
+  return Array.isArray(pastes) ? (pastes as PasteBlock[]) : []
 }
 
 /** The entry's own words: the content with a carried quote's block and a
@@ -106,12 +164,37 @@ export function queuedDisplayText(m: ChatMessage): string {
  *  typed words (a quote plus knowledge) has its wire trimmed right after the
  *  close marker, so the blank line a fresh send puts between the envelope and
  *  the words is put back here; without it the edit would glue the words onto
- *  the marker line and the envelope would no longer be found. */
+ *  the marker line and the envelope would no longer be found.
+ *
+ *  A `[ Paste #N ]` token the editor showed expands again here, from the
+ *  row's blocks, so the agent receives the pasted text and never the bare
+ *  token; a token the edit removed takes its paste with it, as deleting the
+ *  token in the composer does. Pure: the commit records the edit in the paste
+ *  side table separately (`recordEditedPastes`), because this also builds the
+ *  live draft a side surface reads on every keystroke. */
 function reglueQuote(m: ChatMessage, edited: string): string {
-  const { quote, envelope } = splitQueuedContent(m)
-  const sep = envelope && edited && !envelope.endsWith('\n') ? '\n\n' : ''
-  const body = envelope + sep + edited
+  const { quote, envelope, pastes } = splitQueuedContent(m)
+  const live = pruneBlocks(edited, pastes)
+  const words = live.length ? expandAll(edited, live) : edited
+  const sep = envelope && words && !envelope.endsWith('\n') ? '\n\n' : ''
+  const body = envelope + sep + words
   return quote ? prependQuote(body, quote) : body
+}
+
+/** The blocks a COMMITTED edit kept, in the order their tokens stand in the
+ *  edited text, after recording the edit in the paste side table under the
+ *  wire `reglueQuote` built for it. Only on the commit: the live draft runs
+ *  through `reglueQuote` on every keystroke, and a record per keystroke, each
+ *  holding the whole paste, would push the sent messages' records out of the
+ *  table's entry and byte budget. No attachment list goes on the record: the
+ *  gateway prunes the entry's list to the markers the edit kept, and a list
+ *  recorded here would be put back over it on a reload
+ *  (`mergePreservedPastes` prefers the record's `files`). */
+function recordEditedPastes(m: ChatMessage, edited: string, wire: string): PasteBlock[] {
+  const { quote, pastes } = splitQueuedContent(m)
+  const live = findTokenRanges(edited, pastes).sort((a, b) => a.start - b.start).map(r => r.block)
+  if (live.length) saveStoredPaste(wire.trim(), quote ? prependQuote(edited, quote) : edited, live)
+  return live
 }
 
 /** Split a slot's message list into the three things a pane surface needs:
@@ -188,11 +271,19 @@ const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 }
  *  ordinary edit would glue the markers together and the queue edit's
  *  whitespace-bounded marker match would prune every attachment but the last.
  *  Enter commits (the composer's own contract); Shift+Enter inserts a line. */
-function EditInput({ initial, onCommit, onCancel, onDraftChange }: {
+function EditInput({ initial, onCommit, onCancel, onDraftChange, pastes = [] }: {
   initial: string
   onCommit: (value: string) => void
   onCancel: () => void
   onDraftChange?: (value: string | undefined) => void
+  /** The blocks behind the `[ Paste #N ]` tokens the value may hold. A
+   *  token is one unit here, as in the composer: Backspace or Delete on it
+   *  removes it whole, a character typed inside it lands after it, and a
+   *  selection that cuts into it grows to cover it. A value that holds a
+   *  token the edit broke (`hasBrokenToken`) is not committed, because the
+   *  commit expands only whole tokens and the agent would receive the broken
+   *  text in place of the paste. */
+  pastes?: PasteBlock[]
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
   const ime = useImeGuard()
@@ -233,12 +324,58 @@ function EditInput({ initial, onCommit, onCancel, onDraftChange }: {
   // focus→blur (or clear→blur) doesn't fire a no-op PATCH + WS broadcast.
   const commit = () => {
     if (committedRef.current) return
+    // A broken token stays in the editor for the user to finish removing or
+    // put back; nothing is sent and nothing is lost. Focus is left where the
+    // user put it: a blur that pulled focus back would trap the pointer.
+    if (hasBrokenToken(value, initial, pastes)) return
     committedRef.current = true
     const trimmed = value.trim()
     if (trimmed && trimmed !== initial.trim()) onCommit(value)
     else onCancel()
   }
   const cancel = () => { if (committedRef.current) return; committedRef.current = true; onCancel() }
+  // Replace `[start, end)` of the value and put the caret after what went in,
+  // once the controlled textarea has re-rendered with it.
+  const splice = (start: number, end: number, insert: string) => {
+    const next = value.slice(0, start) + insert + value.slice(end)
+    setValue(next)
+    currentDraftRef.current = next
+    onDraftChange?.(next)
+    requestAnimationFrame(() => ref.current?.setSelectionRange(start + insert.length, start + insert.length))
+  }
+  // The token-as-one-unit rule for an editing key. True when it handled the key.
+  const editAtomically = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (!pastes.length || e.metaKey || e.ctrlKey || e.altKey) return false
+    const el = e.currentTarget
+    const s = el.selectionStart ?? 0
+    const en = el.selectionEnd ?? s
+    const typed = e.key.length === 1 || (e.key === 'Enter' && e.shiftKey)
+    if (e.key !== 'Backspace' && e.key !== 'Delete' && !typed) return false
+    const ranges = findTokenRanges(value, pastes)
+    if (!ranges.length) return false
+    const insert = typed ? (e.key === 'Enter' ? '\n' : e.key) : ''
+    if (s !== en) {
+      // A selection that cuts into a token grows to cover the whole token.
+      const cut = ranges.filter(r => r.start < en && r.end > s && (r.start < s || r.end > en))
+      if (!cut.length) return false
+      e.preventDefault()
+      splice(Math.min(s, ...cut.map(r => r.start)), Math.max(en, ...cut.map(r => r.end)), insert)
+      return true
+    }
+    if (e.key === 'Backspace') {
+      const r = ranges.find(r => s > r.start && s <= r.end)
+      if (!r) return false
+      e.preventDefault(); splice(r.start, r.end, ''); return true
+    }
+    if (e.key === 'Delete') {
+      const r = ranges.find(r => s >= r.start && s < r.end)
+      if (!r) return false
+      e.preventDefault(); splice(r.start, r.end, ''); return true
+    }
+    const r = ranges.find(r => s > r.start && s < r.end)
+    if (!r) return false
+    e.preventDefault(); splice(r.end, r.end, insert); return true
+  }
   return (
     <>
       <textarea
@@ -259,6 +396,7 @@ function EditInput({ initial, onCommit, onCancel, onDraftChange }: {
         onClick={e => e.stopPropagation()}
         onKeyDown={e => {
           e.stopPropagation()
+          if (editAtomically(e)) return
           if (e.key === 'Enter' && !e.shiftKey) {
             // The commit's own emptiness check stays in commit(). claimEnter
             // consumes the keypress, so a committing Enter never inserts a line.
@@ -290,7 +428,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
-  onEdit?: (queueId: string, content: string) => void
+  /** `pastes` is set when the entry carried paste blocks: the ones whose
+   *  tokens the edit kept, in token order (empty when it kept none), for the
+   *  row to carry on. Absent when the entry had none to begin with. */
+  onEdit?: (queueId: string, content: string, pastes?: PasteBlock[]) => void
   onEditDraft?: (queueId: string, content: string | undefined) => void
   /** Move a queued message one step toward the front (`next`) or the back
    *  (`later`) of the run order. Index 0 runs first. */
@@ -320,6 +461,13 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
   const clickable = messages.length > 1 || !readOnly
   const readOnlyHint = readOnly ? i18nT('components.queueStack.read_only_waiting_to_send') : undefined
   const [editingId, setEditingId] = useState<string | null>(null)
+  // The row as it was when its editor opened. The editor's value, the blocks
+  // behind its tokens, the change check, the expansion on commit and the
+  // record of the kept blocks all read this one snapshot: a `queue_edit`
+  // frame from another tab rewrites the live row under an open editor, and
+  // an editor holding a token while the live row had lost its blocks would
+  // commit the literal token in place of the paste.
+  const editingRow = useRef<ChatMessage | null>(null)
 
   // Reset expanded when queue drains to trivial size
   useEffect(() => {
@@ -331,9 +479,11 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
     if (editingId && !messages.some(m => (m.meta?.queueId as string) === editingId)) setEditingId(null)
   }, [messages, editingId])
 
-  const commitEdit = (queueId: string, content: string) => {
+  const commitEdit = (queueId: string, content: string, pastes?: PasteBlock[]) => {
     setEditingId(null)
-    if (onEdit) onEdit(queueId, content)
+    if (!onEdit) return
+    if (pastes) onEdit(queueId, content, pastes)
+    else onEdit(queueId, content)
   }
   const cancelEdit = () => setEditingId(null)
 
@@ -516,14 +666,20 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                   {isEditing && onEdit ? (
                     <>
                       <EditInput
-                        initial={queuedOwnText(m)}
-                        onCommit={v => commitEdit(queueId!, reglueQuote(m, v))}
+                        initial={queuedOwnText(editingRow.current ?? m)}
+                        pastes={splitQueuedContent(editingRow.current ?? m).pastes}
+                        onCommit={v => {
+                          const opened = editingRow.current ?? m
+                          const wire = reglueQuote(opened, v)
+                          const live = recordEditedPastes(opened, v, wire)
+                          commitEdit(queueId!, wire, queuedPastes(opened).length ? live : undefined)
+                        }}
                         onCancel={cancelEdit}
                         // Blank typed words report no draft, checked before the
                         // reglue: the card's quote or knowledge envelope would
                         // otherwise make a cleared editor read as an edit.
                         onDraftChange={onEditDraft
-                          ? value => onEditDraft(queueId!, value === undefined || !value.trim() ? undefined : reglueQuote(m, value))
+                          ? value => onEditDraft(queueId!, value === undefined || !value.trim() ? undefined : reglueQuote(editingRow.current ?? m, value))
                           : undefined}
                       />
                       {/* Kept beside the edit box: the editor holds only the
@@ -585,7 +741,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                           title={i18nT('components.queueStack.edit_queued_message')}
                           aria-label={i18nT('components.queueStack.edit_queued_message')}
                           disabled={isPending}
-                          onClick={(e) => { e.stopPropagation(); setEditingId(queueId!) }}
+                          onClick={(e) => { e.stopPropagation(); editingRow.current = m; setEditingId(queueId!) }}
                         >
                           <Pencil size={13} />
                         </button>
