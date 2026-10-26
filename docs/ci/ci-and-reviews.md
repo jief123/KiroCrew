@@ -233,6 +233,21 @@ Three structural facts explain most of the rest:
   the author of a cross-referencing fix. It holds `actions: read`,
   `contents: read` and `issues: write`, and `test/test_main_red_watch.py` pins the
   name, the gate and the parsing, and runs the step with `gh` stubbed.
+- **A failed pull request run names the tests that are red on main.** While a
+  `Main is red:` issue is open, `main-red-pr-notice.yml` reads the failed jobs of
+  a same-repository pull request's `CI` run (target `main`). If one of its
+  failing test ids is also in the issue's set, it writes one comment, found by a
+  hidden marker and edited in place, listing which failures are the same as main
+  and which are the author's. A failure counts as the same only when the message
+  start (80 characters) matches, the pull request does not change that test file
+  and its base contains the main commit of the issue's last red run; anything it
+  cannot show is the
+  author's, and a failing check that names no test is always the author's. It is
+  a comment: no status, label, assignee or mention, `continue-on-error`, and the
+  same three permissions as `main-red-watch.yml`. It reads only an issue the
+  Actions token filed and only that issue's checked state record; the fix line is
+  rebuilt from the issue timeline, not copied from the editable body.
+  `test/test_main_red_pr_notice.py` runs the step with `gh` stubbed.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its
