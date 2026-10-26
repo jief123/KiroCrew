@@ -122,6 +122,10 @@ def _relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]
         # itself a bound worker's: the parent's report costs the nested board's tasks.
         if str(data.get("slot") or "") != own:
             return
+        if str(data.get("by") or "") == parent:
+            # The parent's own charge, relayed down a binding cycle (A under B, B under
+            # A): sent back, the parent would bill it twice.
+            return
         closer = str(data.get("closer") or "")
         if not closer:
             return

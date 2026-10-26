@@ -583,6 +583,48 @@ def test_a_unit_whose_header_lands_after_a_lookup_becomes_the_newest(tmp_path):
     assert session_ledger.newest_work_unit(LEAD) == "u-lead-2"
 
 
+def test_a_lookup_before_the_replacements_opener_lands_is_not_kept(_live_crew_log):
+    """A replacement whose header is older on the clock (a backward step) and whose
+    ``session/opened`` has not landed yet sorts first; once the opener names its
+    predecessor, the next lookup returns the replacement."""
+    from kiro_crew import session_ledger
+    from kiro_crew.crew_log import store
+
+    _lead_board()
+    with pytest.MonkeyPatch.context() as clock:
+        clock.setattr(store, "now_ms", lambda: 1_000)
+        replacement = _unit("u-lead-2", LEAD)
+    assert session_ledger.newest_work_unit(LEAD) == LEAD_UNIT
+    replacement.append(
+        "session/opened",
+        {
+            "agent": "lead",
+            "slot": LEAD,
+            "model": "opus",
+            "cwd": "/",
+            "owner": "owner",
+            "resumed": False,
+            "previous": {"sid": LEAD_UNIT},
+        },
+        src="gateway",
+    )
+    assert session_ledger.newest_work_unit(LEAD) == "u-lead-2"
+
+
+def test_a_charge_in_a_binding_cycle_is_billed_once(_live_crew_log):
+    """A under B and B under A: A's charge goes to B and is not sent back to A."""
+    other = "chat-own-units-other"
+    _unit("u-other", other)
+    _record("u-other", slot=other, actor="conductor", by=other, action="goal", goal="o", round=1)
+    _lead_board(bind=None)
+    _bindings(_live_crew_log, {LEAD: other, other: LEAD})
+    _turn(LEAD_UNIT, 1, 3.0)
+    assert not [e for e in _lead_entries() if e.type == "work/charged"], "a charge came home"
+    assert [e.data["by"] for e in _lead_entries("u-other") if e.type == "work/charged"] == [LEAD]
+    own = _state("workstreams")["spend"].get(LEAD)
+    assert own is None or own["credits"] <= 3.0, own
+
+
 def test_a_changed_binding_is_read_on_the_next_closer(_live_crew_log):
     """The binding is cached against its file; rewriting the file is seen."""
     from kiro_crew import work_ledger

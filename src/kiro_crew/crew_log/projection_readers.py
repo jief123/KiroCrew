@@ -274,7 +274,11 @@ def newest_unit_in_succession(slot: str) -> str:
         return held[1]
     units = units_in_succession(slot)
     unit = units[-1] if units else ""
-    if unit:
+    # Cached only when at most one unit lacks a readable predecessor (the chain start).
+    # A unit whose opening entry has not landed yet reads as a second start and would
+    # be ordered by the clock; caching that guess would outlive the opener's arrival.
+    settled = sum(1 for u in units if unit_opened_previous(KIND_SESSION, u) is None) <= 1
+    if unit and settled:
         with _newest_units_guard:
             _NEWEST_UNITS.pop(slot, None)
             _NEWEST_UNITS[slot] = (identity, unit)
