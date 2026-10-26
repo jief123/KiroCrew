@@ -508,6 +508,25 @@ def _k15_parked_pool_wait(module: _Module) -> Iterable[ast.AST]:
             yield node
 
 
+def _k18_xfail_strict_false(module: _Module) -> Iterable[ast.AST]:
+    """``pytest.mark.xfail(strict=False)`` overrides the global ``xfail_strict = true``
+    in ``setup.cfg``, making an unexpected pass invisible until it silently pollutes main.
+
+    Matches ``pytest.mark.xfail(strict=False, ...)`` and ``pytest.xfail(strict=False)``;
+    does not flag calls that omit ``strict=`` (the global covers those) or that pass
+    ``strict=True`` explicitly."""
+    for node in module.calls:
+        func_name = _dotted(node.func)
+        if func_name not in ("pytest.mark.xfail", "pytest.xfail"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "strict":
+                val = keyword.value
+                if isinstance(val, ast.Constant) and val.value is False:
+                    yield node
+                    break
+
+
 def _parenthesized_with_as(source: bytes, starts: list[int], node: ast.AST) -> bool:
     """Whether *node* is ``with (a as b, ...):``: one pair of parentheses holds every
     item and at least one binds a name. ``with (a) as b:`` and ``with (a, b):`` are not."""
@@ -583,6 +602,7 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K13-fixed-flush-ceiling": ("flush",),
     "K14-unpaused-crew-log-rmtree": ("rmtree",),
     "K15-parked-pool-wait": ("to_thread", "run_in_executor"),
+    "K18-xfail-strict-false": ("xfail",),
 }
 
 #: The classes whose detector also reads the source text.
@@ -599,6 +619,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K13-fixed-flush-ceiling": _k13_fixed_flush_ceiling,
     "K14-unpaused-crew-log-rmtree": _k14_unpaused_crew_log_rmtree,
     "K15-parked-pool-wait": _k15_parked_pool_wait,
+    "K18-xfail-strict-false": _k18_xfail_strict_false,
 }
 
 
@@ -1036,6 +1057,20 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(work, 5)\n    await asyncio.to_thread(ev.is_set)\n"
         "    await loop.run_in_executor(None, work, 5)\n"
         "    await async_wait_until(ev.is_set)\ndef held():\n    assert ev.wait(5)\n",
+    ),
+    "K18-xfail-strict-false": (
+        (
+            "import pytest\n@pytest.mark.xfail(strict=False, reason='issue pending')\n"
+            "def test_x():\n    pass\n",
+            "import pytest\n@pytest.mark.xfail(\n    strict=False,\n    reason='known'\n)\n"
+            "def test_x():\n    pass\n",
+        ),
+        # No strict= omission is fine (global xfail_strict=true covers it);
+        # explicit strict=True is fine; strict=False on a non-xfail call is not counted.
+        "import pytest\n@pytest.mark.xfail(reason='known')\ndef test_x():\n    pass\n"
+        "@pytest.mark.xfail(strict=True, reason='known')\ndef test_y():\n    pass\n"
+        "def test_z(strict=False):\n    pass\n"
+        "def test_w():\n    obj.configure(strict=False)\n",
     ),
 }
 
