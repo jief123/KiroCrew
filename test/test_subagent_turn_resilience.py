@@ -415,6 +415,53 @@ async def test_orphan_dm_callback_error_is_swallowed(caplog):
 
 
 @pytest.mark.asyncio
+async def test_undelivered_orphan_log_keeps_result_path_and_whole_worktree(caplog, tmp_path):
+    """With no channel, the log line is the notice: it must carry every field.
+
+    A task long enough to fill the 100-character preview puts the result path
+    past the 200th character, and the worktree it names is cut at the preview.
+    """
+    worktree = "/home/user/.kiro/crew/scratch/runtime-3c7d0aeb/wt-orphan-notice-0123456789"
+    state = {
+        "id": "2f2cb4b5",
+        "task": f"Fix the open review on the feature branch in the worktree {worktree}",
+        "parent_session": "",
+        "result_complete": True,
+        "cwd": worktree,
+    }
+    run_dir = tmp_path / "subagents" / "2f2cb4b5"
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    with (
+        patch("kiro_crew.subagent.has_dashboard_surface", return_value=False),
+        patch("kiro_crew.subagent.agent_dir_for_display", return_value=run_dir),
+    ):
+        msg = await mgr._notify_orphan("2f2cb4b5", state, True)
+    assert msg is not None
+    assert f"Worktree: `{worktree}`" in msg.splitlines()
+    assert f"Result saved at: `{run_dir / 'result.txt'}`" in msg.splitlines()
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        await mgr._send_orphan_slack_dm(msg)
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.subagent" and r.levelno == logging.WARNING
+    ]
+    assert warnings == [f"Orphan notification (no delivery channel wired): {msg}"]
+
+
+@pytest.mark.asyncio
+async def test_orphan_notice_without_recorded_cwd_has_no_worktree_line():
+    state = {"id": "orphan-2", "task": "recover work", "parent_session": ""}
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    with patch("kiro_crew.subagent.has_dashboard_surface", return_value=False):
+        msg = await mgr._notify_orphan("orphan-2", state, False)
+    assert msg is not None
+    assert not any(line.startswith("Worktree:") for line in msg.splitlines())
+    assert "No result was captured before the restart." in msg
+
+
+@pytest.mark.asyncio
 async def test_cancel_recovery_waits_for_slow_teardown():
     """Respawn must not race a slow session reset in the original finally.
 

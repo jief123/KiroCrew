@@ -830,11 +830,17 @@ class OrphanStallMonitor(ManagerComponent):
             )
             if resume:
                 lines.append(resume)
+        # The task preview is cut at 100 characters, so a worktree the task text
+        # names is cut with it. The run's recorded working directory is the whole
+        # path, and it is what the parent needs to find the run's files again.
+        cwd = state.get("cwd")
+        worktree = [f"Worktree: `{cwd}`"] if isinstance(cwd, str) and cwd.strip() else []
         msg = "\n".join(
             [
                 SUBAGENT_COMPLETION_PREFIX,
                 f"Agent `{agent_id}` {glyph} {note}",
                 f"Task: {task_preview}",
+                *worktree,
                 *lines,
             ]
         )
@@ -957,7 +963,10 @@ class OrphanStallMonitor(ManagerComponent):
                     return
             except Exception:
                 logger.debug("on_orphan_dm raised", exc_info=True)
-        logger.warning("Orphan notification (no delivery channel wired): %s", msg[:200])
+        # The log line is the only copy of the notice here, so it carries all of
+        # it: the result path and worktree sit past the first 200 characters. The
+        # caller redacts each notice before it reaches this method.
+        logger.warning("Orphan notification (no delivery channel wired): %s", msg)
 
     def _live_shared_count_impl(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).
