@@ -13,6 +13,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationBanner, { computeExitDelta, exitTarget } from '../components/notifications/NotificationBanner'
+import { SWIPE_CLICK_SWALLOW_MS } from '../components/notifications/SwipeToDismiss'
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
 import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
 import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
@@ -746,6 +747,9 @@ describe('NotificationBanner: swipe to dismiss (mobile)', () => {
     const n = mkN()
     const { onOpenNote } = renderBanner()
     arrive(n)
+    // The swallow is a wall-clock deadline; pin the clock so the release and
+    // the click below are measured on the same instant, not on a loaded runner.
+    vi.useFakeTimers()
     swipe([[200, 100], [215, 100], [240, 100]])
     fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
     expect(onOpenNote).not.toHaveBeenCalled()
@@ -767,6 +771,37 @@ describe('NotificationBanner: swipe to dismiss (mobile)', () => {
     fireEvent.pointerCancel(el, touch(320, 100))
     expect(el.style.transform).toBe('')
     expect(cards()).toHaveLength(1)
+  })
+
+  it('the click swallow after a snapped-back swipe expires: a keyboard activation 350ms later opens the note', () => {
+    vi.useFakeTimers()
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    swipe([[200, 100], [215, 100], [240, 100]])
+    // A touch that moved past the browser's tap slop may fire no click at all,
+    // so nothing clears the swallow but time. An Enter on the card body (a
+    // click with no pointerdown) after the window must go through.
+    act(() => { vi.advanceTimersByTime(SWIPE_CLICK_SWALLOW_MS) })
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).toHaveBeenCalledWith(n.ts)
+  })
+
+  it('a cancelled swipe arms no click swallow: the next keyboard activation still opens the note', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(215, 100))
+    fireEvent.pointerMove(el, touch(260, 100))
+    fireEvent.pointerCancel(el, touch(260, 100))
+    // A cancel fires no click of its own, so there is nothing to swallow; an
+    // Enter on the card body (a click with no pointerdown) must go through.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).toHaveBeenCalledWith(n.ts)
   })
 
   it('keeps the visible close button beside the swipe on mobile', () => {

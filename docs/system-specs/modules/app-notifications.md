@@ -550,8 +550,11 @@ declined for good, the wrapper is `touch-action: pan-y`, and a `pointercancel`
 (the browser took the scroll) snaps the card back, so a vertical scroll is never
 taken. The card follows the finger 1:1 in either direction; a release past
 `SWIPE_DISMISS_DISTANCE` (80 px) dismisses, a shorter one snaps back
-(`transition-transform`, none under `prefers-reduced-motion`), and the click the
-release fires is swallowed so a snapped-back swipe does not also open the note.
+(`transition-transform`, none under `prefers-reduced-motion`), and the click a
+release fires is swallowed for `SWIPE_CLICK_SWALLOW_MS` (350 ms, the drawer's
+own ceiling) so a snapped-back swipe does not also open the note; a cancel arms
+no swallow, and past the window a keyboard activation goes through, since a
+touch that moved past the tap slop may fire no click at all.
 `NotificationBanner.test.tsx` ("swipe to dismiss") pins the threshold, the
 snap-back, the vertical decline, the cancel, the click swallow, the mouse and
 desktop no-ops and the reduced-motion class.

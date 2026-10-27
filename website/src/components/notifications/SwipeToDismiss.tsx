@@ -22,6 +22,19 @@ export const SWIPE_DISMISS_SCROLL_SLOP = 8
  * threshold, and the flick a user actually makes travels past this anyway.
  */
 export const SWIPE_DISMISS_DISTANCE = 80
+/**
+ * How long after a swipe's release its synthesized `click` is still swallowed.
+ *
+ * A release fires `click` AFTER `pointerup`, so the swallow cannot be dropped
+ * with the gesture -- but it must not stay armed either. A touch that moved
+ * past the browser's own tap slop often fires NO click at all, so a flag with
+ * no time limit would wait for the next activation that has no pointerdown of
+ * its own (a keyboard Enter on Review, an assistive-technology click) and eat
+ * that one. Same ceiling as `useDrawerSwipe`'s `CLICK_SWALLOW_MS`: long enough
+ * for an engine still carrying the legacy ~300ms tap delay, and the first click
+ * it swallows ends it early.
+ */
+export const SWIPE_CLICK_SWALLOW_MS = 350
 
 interface Gesture {
   pointerId: number
@@ -77,11 +90,12 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
   const [offset, setOffset] = useState(0)
   const [swiping, setSwiping] = useState(false)
   const gesture = useRef<Gesture>(IDLE)
-  // The release of a real swipe still fires `click` on whatever the finger
+  // The release of a real swipe may still fire `click` on whatever the finger
   // landed on (the card body opens the note, the X dismisses). A swipe that
   // snapped back must not ALSO open the bell; one that dismissed must not run
-  // the open path on a card that is already leaving.
-  const suppressClick = useRef(false)
+  // the open path on a card that is already leaving. Held as a deadline, not
+  // a flag: see `SWIPE_CLICK_SWALLOW_MS`.
+  const swallowUntil = useRef(0)
 
   const reset = useCallback(() => {
     gesture.current = IDLE
@@ -90,7 +104,7 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
   }, [])
 
   const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    suppressClick.current = false
+    swallowUntil.current = 0
     if (!enabled || e.pointerType === 'mouse' || gesture.current.active) return
     gesture.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: true, engaged: false }
   }, [enabled])
@@ -122,7 +136,11 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
     if (!g.active || e.pointerId !== g.pointerId) return
     if (!g.engaged) { gesture.current = IDLE; return }
     // Capture, when it was granted, is released by the browser on up/cancel.
-    suppressClick.current = true
+    // Only a RELEASE can fire the click to swallow, and only within the window:
+    // a cancel fires none, and a release past the tap slop may fire none either,
+    // so anything armed for longer would wait for a later activation that has
+    // no pointerdown to clear it (a keyboard Enter on Review) and eat that.
+    swallowUntil.current = cancelled ? 0 : Date.now() + SWIPE_CLICK_SWALLOW_MS
     if (!cancelled && Math.abs(e.clientX - g.startX) >= SWIPE_DISMISS_DISTANCE) {
       // The card is leaving: AnimatePresence plays the exit from wherever the
       // wrapper sits, so the offset is left in place rather than snapped.
@@ -138,8 +156,8 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
   const onPointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => end(e, true), [end])
 
   const onClickCapture = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!suppressClick.current) return
-    suppressClick.current = false
+    if (Date.now() >= swallowUntil.current) return
+    swallowUntil.current = 0
     e.preventDefault()
     e.stopPropagation()
   }, [])
