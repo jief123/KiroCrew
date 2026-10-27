@@ -11,8 +11,8 @@ filesystem remains untouched — the broker stubs in these specs are injected
 into each kiro-cli session over ACP ``session/new``, which outranks the
 same-named entry in the agent spec (see ``session_servers.py``).
 
-Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped. The set is empty, so
-nothing is excluded through it; the first-party servers that bind
+Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped. The set lists only
+the credential vendors; the first-party servers that bind
 ``KIROCREW_SESSION_KEY`` stay unwrapped only because nothing lists them in the
 stub allowlist.
 
