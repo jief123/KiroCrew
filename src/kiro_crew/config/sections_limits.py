@@ -227,6 +227,12 @@ SESSION_SORT_MODES: tuple[str, ...] = (
     "name-desc",
     "manual",
 )
+# The "Translucent panels" (Liquid Glass) switch as the workspace stores it: a
+# string like ``theme_mode``, with ``""`` for "never chosen here" so the browser's
+# own stored choice keeps holding on a workspace that predates the key. The
+# loader normalizes to this set, ``PUT /api/config/theme`` accepts exactly it, and
+# the frontend's ``liquidGlass.ts`` mirrors the two non-empty values.
+TRANSLUCENT_PANELS_VALUES: tuple[str, ...] = ("", "on", "off")
 SESSION_TIMEOUT_MIN = 0
 SESSION_TIMEOUT_MAX = 86400
 POOL_TTL_SECS_MIN = 0

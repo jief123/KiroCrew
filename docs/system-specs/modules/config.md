@@ -3126,6 +3126,7 @@ class DashboardConfig:
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
+    translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
@@ -3651,10 +3652,30 @@ reads one of these keys.
 
 ### Dashboard theme persistence
 
-`DashboardConfig.theme_mode` / `theme_color` / `onboarded` are workspace-persistent
-(shared across ports and devices) rather than browser-local. The frontend reads
-them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
-unset (the frontend falls back to `localStorage` or the built-in default).
+`DashboardConfig.theme_mode` / `theme_color` / `translucent_panels` / `onboarded`
+are workspace-persistent (shared across ports and devices) rather than
+browser-local. The frontend reads them at boot via `GET /api/theme/boot`; empty
+`theme_mode`/`theme_color` mean unset (the frontend falls back to `localStorage`
+or the built-in default).
+
+`translucent_panels` is the "Translucent panels" switch (Settings -> Display ->
+View; the Liquid Glass primitive). It is a string like `theme_mode`, not a bool,
+because `""` carries a meaning a bool cannot: "never chosen on this workspace".
+The setting was browser-local (`mc-liquid-glass`) before it was server-backed,
+and `localStorage` is per ORIGIN, so a new gateway port, `localhost` against
+`127.0.0.1`, a second browser or the desktop app each started from an absent
+key and read as "the glass keeps turning itself off". The browser copy stays as
+the render cache (`index.html` reads it before hydration so the first paint
+matches). At boot `useTheme` adopts `"on"` / `"off"` into the browser
+(`adoptServerLiquidGlass` in `website/src/utils/liquidGlass.ts`); on `""` it
+leaves the browser copy alone and, when that copy says on, publishes `"on"` once
+through `PUT /api/config/theme`, so an existing user's choice survives the
+upgrade and reaches their other browsers. An absent (off) browser copy is never
+published on `""`: it is also what a fresh browser holds. `useLiquidGlass`
+publishes every flip of the switch (and the first-run seed) the same way. The
+loader (`_translucent_panels_from`) reads anything outside
+`TRANSLUCENT_PANELS_VALUES` (`"", "on", "off"`) as `""`, and the PUT refuses it
+(400), so a bool written by hand never persists as a choice.
 
 ### Sidebar folder order
 

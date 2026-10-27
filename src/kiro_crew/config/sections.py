@@ -318,6 +318,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     TITLE_REFRESH_EVERY_TURNS_MIN,
     TOOL_APPROVAL_TIMEOUT_MAX,
     TOOL_APPROVAL_TIMEOUT_MIN,
+    TRANSLUCENT_PANELS_VALUES,
     UPLOAD_MAX_MB_MAX,
     UPLOAD_MAX_MB_MIN,
     AutocompactPctError,

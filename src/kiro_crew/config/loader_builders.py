@@ -209,6 +209,18 @@ def _folder_sort_from(raw: object, default: str) -> str:
     return default
 
 
+def _translucent_panels_from(raw: object) -> str:
+    """Normalize the Translucent panels choice; anything unknown reads as ``""``.
+
+    ``""`` is "never chosen on this workspace": the frontend then keeps the
+    browser's own stored choice, which is what every install did before the key
+    existed, so a missing or hand-edited value changes nothing the person sees.
+    """
+    if isinstance(raw, str) and raw in _sections.TRANSLUCENT_PANELS_VALUES:
+        return raw
+    return ""
+
+
 def _session_sort_from(raw: object, default: str) -> str:
     """Normalize the sidebar session sort key; anything unknown is *default*, ``date-desc``.
 
@@ -1115,6 +1127,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             if isinstance(nudge := section.get("update_nudge"), dict)
             else section.default("update_nudge")
         ),
+        translucent_panels=_translucent_panels_from(section.get("translucent_panels")),
         onboarded=bool(section.get("onboarded")),
         import_onboarded=_safe_bool(
             dashboard_data.get("import_onboarded"),

@@ -7867,6 +7867,7 @@
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "update_nudge": {},
+        "translucent_panels": "",
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
@@ -8932,6 +8933,24 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
+    },
+    {
+      "path": "dashboard.translucent_panels",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Translucent Panels",
+      "help": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them (the Liquid Glass primitive): 'on', or 'off' for solid cards. Empty = never chosen on this workspace (the browser's own stored choice holds, as before the setting was server-backed). Stored here like the theme mode, not only in the browser, so the choice follows the user across ports, browsers and the desktop app; the browser keeps a copy only so the first paint already matches.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "on",
+        "off"
+      ],
+      "defaultValue": ""
     },
     {
       "path": "dashboard.onboarded",

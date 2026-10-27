@@ -82,6 +82,7 @@ from kiro_crew.config.sections import (
     TITLE_REFRESH_EVERY_TURNS_MAX,
     TRANSCRIBE_LANGUAGES_MAX,
     TRANSCRIBE_LANGUAGES_MIN,
+    TRANSLUCENT_PANELS_VALUES,
     SttConfig,
     transcribe_language_options,
     transcribe_vocabulary_name,
@@ -459,6 +460,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "mode": cfg.dashboard.theme_mode or "",
         "color": cfg.dashboard.theme_color or "",
         "language": cfg.dashboard.language or "",
+        "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
         "privacy_acked": cfg.dashboard.privacy_acked,
@@ -481,8 +483,9 @@ async def api_theme_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/theme — read or update workspace display settings.
 
     GET returns the current config. PUT accepts
-    {mode?, color?, language?, onboarded?, import_onboarded?, privacy_acked?,
-    crewmates_onboarded?} and persists ONLY those ``dashboard.*`` keys.
+    {mode?, color?, language?, translucent_panels?, onboarded?, import_onboarded?,
+    privacy_acked?, crewmates_onboarded?} and persists ONLY those ``dashboard.*``
+    keys.
 
     The PUT is a locked delta read-modify-write, never a whole-document
     ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
@@ -533,6 +536,15 @@ async def api_theme_config(request: web.Request) -> web.Response:
         updates["language"] = language
     # A real bool only: ``bool("false")`` is True, so a string here is a client bug
     # this endpoint must answer 400, not persist inverted.
+    if "translucent_panels" in body:
+        # Like ``mode``, a string with "" for "never chosen": a bool could not
+        # tell a workspace that chose solid from one that predates the key, and
+        # that is the case where the browser's own stored choice must keep
+        # holding (see ``_translucent_panels_from`` in the loader).
+        translucent = body["translucent_panels"]
+        if translucent not in TRANSLUCENT_PANELS_VALUES:
+            raise web.HTTPBadRequest(text="translucent_panels must be '', 'on', or 'off'")
+        updates["translucent_panels"] = translucent
     for flag in ("onboarded", "import_onboarded", "privacy_acked", "crewmates_onboarded"):
         if flag in body:
             if not isinstance(body[flag], bool):
