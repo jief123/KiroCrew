@@ -248,6 +248,40 @@ class ScriptContext:
             raise RuntimeError(f"set_session_mode() failed: {self._reason(result)}")
         return result
 
+    # ── The crewmate's crew log ──
+    #
+    # A script cron bound to a crewmate feeds that crewmate's Dashboard page without a
+    # model turn: each record it appends lands in the crewmate's own crew log as one
+    # ``dashboard/custom_value`` entry, and the ``custom`` fold keeps the latest record
+    # per type, so a page bound to ``custom.latest.<type>.data`` redraws when it lands.
+
+    def crew_log_append(self, type: str, data: dict) -> dict:
+        """Append one record to the bound crewmate's crew log (``POST .../dashboard/record``).
+
+        *type* names the record: letters, digits and underscores only, at most 64
+        characters, so a page binds it as ``custom.latest.<type>``; *data* is a JSON
+        object of at most 8 KiB
+        serialized and 8 levels deep. The record is redacted the way ``notify()``
+        redacts its text, because a page renders it.
+
+        The gateway decides WHO wrote it: the entry is stamped with this job's id and
+        the crewmate it is bound to, read from the job's own attested identity, and
+        nothing in the request can change either. A job bound to no crewmate is
+        refused ``cron_not_member_bound``; a crewmate whose chat has never run has no
+        crew log yet and answers ``crew_log_unavailable``; more than 30 records in a
+        minute answers ``quota_exceeded``. Returns the gateway's receipt, ``{"ok":
+        True, "recorded": {"type", "writer", "member"}}``. Raises RuntimeError
+        carrying the gateway's reason if it refuses or cannot be reached.
+        """
+        # Each string on its own, never the serialized blob: a credential pattern that
+        # spans a key and its value (``"authorization": "Bearer ..."``) would otherwise
+        # eat the ``": "`` between them and leave text that is not JSON.
+        safe = {"type": redact(type), "data": _redact_deep(data)}
+        result = self._post("/api/agent-panel/dashboard/record", safe)
+        if not isinstance(result, dict) or "error" in result:
+            raise RuntimeError(f"crew_log_append() failed: {self._reason(result)}")
+        return result
+
     @staticmethod
     def _reason(result: object) -> str:
         if isinstance(result, dict) and result.get("error"):
@@ -374,6 +408,29 @@ class ScriptContext:
         except Exception as exc:
             logger.warning("ScriptContext %s failed: %s", where, exc)
             return {"error": str(exc)}
+
+
+def _redact_deep(value: Any) -> Any:
+    """*value* with every string in it redacted, shape kept.
+
+    Strings are redacted one at a time -- keys and values alike, because a record's
+    keys are the script's own free text too -- and containers are rebuilt around them.
+    A key that redacts onto one already present is suffixed rather than dropped, so two
+    distinct members do not collapse into one. Scalars that are not strings pass through.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, inner in value.items():
+            name = redact(key) if isinstance(key, str) else key
+            while name in out:
+                name = f"{name}_"
+            out[name] = _redact_deep(inner)
+        return out
+    if isinstance(value, list):
+        return [_redact_deep(inner) for inner in value]
+    return value
 
 
 _REFUSAL_CODE = re.compile(r"[a-z0-9_.-]{1,64}")

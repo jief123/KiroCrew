@@ -270,6 +270,113 @@ class TestSetSessionMode:
             ctx.set_session_mode("chat-77", "trust")
 
 
+class TestCrewLogAppend:
+    """``crew_log_append`` hands the gateway one record for the bound crewmate's log.
+
+    The body carries the TYPE and DATA and nothing else: who wrote it and for whom
+    is the gateway's reading of the cron's own credential, so no identity rides in
+    the body for a script to set.
+    """
+
+    def test_posts_type_and_data_with_the_cron_credential_and_returns_the_receipt(
+        self, ctx, gateway
+    ):
+        receipt = {
+            "ok": True,
+            "recorded": {"type": "stock_check", "writer": f"cron:{_JOB}", "member": "trader"},
+        }
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = receipt
+
+        assert ctx.crew_log_append("stock_check", {"symbol": "AMZN", "price": 187.4}) == receipt
+
+        (req,) = gateway.seen
+        assert req.full_url == "http://127.0.0.1:7788/api/agent-panel/dashboard/record"
+        assert req.get_method() == "POST"
+        assert json.loads(req.data) == {
+            "type": "stock_check",
+            "data": {"symbol": "AMZN", "price": 187.4},
+        }
+        assert _cron_headers(req) == {
+            "secret": "tok",
+            "key": f"cron:{_JOB}",
+            "token": "signed-run-token",
+        }
+
+    def test_the_record_is_redacted_like_a_notification(self, ctx, gateway):
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
+
+        ctx.crew_log_append("stock_check", {"note": f"key {_FAKE_KEY} seen"})
+
+        (req,) = gateway.seen
+        assert _FAKE_KEY not in req.data.decode()
+
+    def test_a_credential_spanning_a_key_and_its_value_still_sends_valid_json(self, ctx, gateway):
+        """Redacted string by string, never as one serialized blob: a pattern that
+        matches across ``"authorization": "Bearer ..."`` would otherwise eat the
+        delimiter and leave text that is not JSON, and the script would crash with a
+        decode error instead of sending the record. The shape survives, nested strings
+        are still scrubbed, and non-string scalars pass through untouched."""
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
+        bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
+        # The serialized blob of this record is what the redactor turns into non-JSON.
+        blob = json.dumps({"headers": {"authorization": bearer}})
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(cron_script.redact(blob))
+
+        ctx.crew_log_append(
+            "stock_check",
+            {
+                "headers": {"authorization": bearer},
+                "rows": [{"key": f"found {_FAKE_KEY}"}, 7],
+                "n": 1,
+            },
+        )
+
+        (req,) = gateway.seen
+        sent = json.loads(req.data)
+        assert sent["type"] == "stock_check"
+        assert _FAKE_KEY not in req.data.decode()
+        assert set(sent["data"]) == {"headers", "rows", "n"}
+        assert set(sent["data"]["headers"]) == {"authorization"}
+        assert sent["data"]["rows"][1] == 7 and sent["data"]["n"] == 1
+
+    def test_two_keys_that_redact_alike_both_survive(self, ctx, gateway):
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
+        first = "AKIA" + "AAAAAAAAAAAAAAAA"
+        second = "AKIA" + "BBBBBBBBBBBBBBBB"
+
+        ctx.crew_log_append("stock_check", {first: 1, second: 2})
+
+        (req,) = gateway.seen
+        data = json.loads(req.data)["data"]
+        assert len(data) == 2 and sorted(data.values()) == [1, 2]
+        assert first not in req.data.decode() and second not in req.data.decode()
+
+    def test_a_cron_bound_to_no_crewmate_raises_with_the_gateway_code(self, ctx, gateway):
+        body = json.dumps(
+            {
+                "error": "this cron job is bound to no crewmate, so it has no crew log to append to",
+                "code": "cron_not_member_bound",
+            }
+        ).encode()
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = urllib.error.HTTPError(
+            "http://127.0.0.1:7788/api/agent-panel/dashboard/record",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(body),
+        )
+
+        with pytest.raises(RuntimeError, match="cron_not_member_bound"):
+            ctx.crew_log_append("stock_check", {"price": 1})
+
+    def test_a_non_dict_answer_is_an_error(self, ctx, gateway):
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = ["unexpected"]
+
+        with pytest.raises(RuntimeError, match="unexpected response"):
+            ctx.crew_log_append("stock_check", {"price": 1})
+
+
 class TestTheCronCredential:
     def test_an_http_refusal_carries_status_and_body(self, ctx, gateway):
         """A 403 body names the remedy; ``HTTP Error 403: Forbidden`` alone does not."""
