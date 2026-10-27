@@ -161,7 +161,7 @@ class TestWorkScalesWithViewedSlotsAndUnitsHoldingChildren:
         # 20x the slots in the same home: the viewed slot's cost is unchanged.
         for i in range(2, 40):
             for j in range(4):
-                _unit(f"acp-{i}-{j}", f"chat-{i}", children=2 if j == 0 else 0)
+                _unit(f"acp-{i}-{j}", f"chat-{i}", children=2 if j == 0 else 0, turns=1)
         _replay([small[0]])
         assert (len(folds.units), scope.UNIT_INDEX.scans) == small_cost
 
