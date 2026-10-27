@@ -603,11 +603,15 @@ jobs:
     # after a 20-40 min shard, and a shard whose base is unreadable warns
     # `compared nothing` and passes. Here the ratchet answers in about a minute,
     # ahead of the matrix, and a run that compared nothing is red, not green.
-    # Static scan only: a git diff plus the changed files.
+    # The ratchet itself is a static scan: a git diff plus the changed files. The
+    # last two steps are the exception: they run the changed test files (warn only)
+    # and publish the report.
     name: Flake Pattern Ratchet
     if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # 15, not 10: the warn-only network step below may use up to 5 minutes of its
+    # own after the ratchet, and the job cap must not turn that into a red job.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -657,3 +661,52 @@ jobs:
             echo "::error::the flake-pattern ratchet found no base to compare with; this job exists to give it one, so a run that compared nothing is a failed gate, not a pass"
             exit 1
           fi
+      # Warn-first network guard (testing-conventions D10). Runs only the test
+      # files this change adds or changes with KIROCREW_NET_STRICT=1, so a file
+      # that looks up or connects to a host other than loopback is named in the
+      # job summary. This is the one step of the job that runs the pull
+      # request's own test code, as the unprivileged ci-shell user, so it
+      # cannot write $GITHUB_STEP_SUMMARY (run-as-runner protects the
+      # file-command directory): it writes the report under $RUNNER_TEMP and the
+      # next step publishes it. continue-on-error keeps both from failing this
+      # job or the check; the script's exit code shows on the step. No changed
+      # test file, a deleted one, or an unreadable base: it writes why and
+      # exits 0. The file names come from the pull request, so the script
+      # passes them to pytest as an argument list and no shell sees them.
+      - name: Report network reach in the changed test files (warn only)
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          NET_STRICT_REPORT: ${{ runner.temp }}/net-strict-report.md
+        run: python scripts/net_strict_changed.py
+      # Runs under the runner identity, which owns the summary file. It runs no
+      # file from the workspace (the pull request controls those) and reads the
+      # report without following a link, from a regular file only, at most 16
+      # KiB, so test code that rewrote the path cannot make it publish anything
+      # but text. `-I -S` starts the interpreter without site initialization and
+      # without the working directory or any PYTHON* variable on the import path:
+      # the editable install puts the workspace's src/ on the site path, and a
+      # sitecustomize.py a test wrote there would otherwise run as this identity
+      # before the checks below.
+      - name: Publish the network report to the job summary
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 -I -S - <<'PY'
+          import os
+          import stat
+
+          path = os.path.join(os.environ["RUNNER_TEMP"], "net-strict-report.md")
+          try:
+              fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+          except OSError:
+              raise SystemExit(0)
+          with os.fdopen(fd, "rb") as handle:
+              if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                  raise SystemExit(0)
+              text = handle.read(16384).decode("utf-8", "replace")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write(text)
+          PY

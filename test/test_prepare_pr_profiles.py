@@ -490,6 +490,12 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # index from one that inherited it. The floor has no event and no base
         # to compare, so the local verdict is the plain check it already holds.
         "scripts/ui_index_freshness.py",
+        # Warn-only report (`continue-on-error` in fast-gate.yml) that runs the
+        # test files a pull request adds or changes with KIROCREW_NET_STRICT=1.
+        # It produces no verdict that can fail a build, so by this floor's own
+        # rule it is not a gate; a contributor runs the same check locally with
+        # `KIROCREW_NET_STRICT=1 pytest <the test files>`.
+        "scripts/net_strict_changed.py",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))

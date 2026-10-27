@@ -160,7 +160,11 @@ checks out depth 2 on every pull request and merge group so the resolver reads t
 first parent, answers in about a minute, and fails when the ratchet still
 reports `compared nothing`. Run `python -m pytest -n0 test/test_flake_pattern_ratchet.py`
 before pushing to see the same verdict first. It does not
-count an order assertion (D4) or a network call (D10): those rest on review. A
+count an order assertion (D4) or a network call (D10): those rest on review. For D10
+the same job also runs `scripts/net_strict_changed.py`, which sets `KIROCREW_NET_STRICT=1`
+for the test files the change adds or changes and names any that look up a non-local
+host or connect past loopback in the job summary; it is warn-only for now, and a file
+that already does so is held to the rule only once someone edits it. A
 `flake-ok` line whose reason has ten characters or more, words and not just punctuation
 or digits, is not counted. `python test/test_flake_pattern_ratchet.py` prints each
 file's current counts as the burn-down view; no committed file holds them.
