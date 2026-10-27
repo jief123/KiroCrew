@@ -20,6 +20,23 @@ describe('pullRequestErrorDetails login remedy', () => {
     }
   })
 
+  it('refuses an upper-case value that is not a Bitbucket Server token name', () => {
+    // An opaque token a provider repeated in its text is as upper-case as a name.
+    const opaque = 'QX7ZK2M9WV4OPAQUE5TOKEN8R3D'
+    expect(pullRequestErrorDetails(body({ error: `Store ${opaque}.`, secretName: opaque })).secretName).toBe('')
+    for (const secretName of [
+      'BITBUCKET_SERVER_TOKENX',
+      'BITBUCKET_SERVER_TOKEN_',
+      'BITBUCKET_SERVER_TOKEN_ABC',
+      'BITBUCKET_SERVER_TOKEN_ab12',
+      `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(260)}`,
+    ]) {
+      expect(pullRequestErrorDetails(body({ error: 'x', secretName })).secretName).toBe('')
+    }
+    expect(pullRequestErrorDetails(body({ error: 'x', secretName: 'BITBUCKET_SERVER_TOKEN' })).secretName)
+      .toBe('BITBUCKET_SERVER_TOKEN')
+  })
+
   it('offers the host-scoped command the gateway sends as loginCommand', () => {
     const details = pullRequestErrorDetails(body({
       error: `glab: 401 Unauthorized ${hint('git.example.com')}`,

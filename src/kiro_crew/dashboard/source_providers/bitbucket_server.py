@@ -46,7 +46,7 @@ _ResultT = TypeVar("_ResultT")
 
 _FETCH_TIMEOUT_SECS = 15
 #: The token used when exactly one Bitbucket Server host is listed.
-GLOBAL_TOKEN_NAME = "BITBUCKET_SERVER_TOKEN"
+GLOBAL_TOKEN_NAME = contract.BITBUCKET_SERVER_TOKEN_NAME
 _PAGE_LIMIT = projection._SECONDARY_PAGE_SIZE
 _CHANGES_PAGE_LIMIT = 500
 _MAX_COMMENTS = 300
@@ -110,6 +110,18 @@ def _token_secret_name(host: str) -> str:
     if hosts._allowed_bitbucket_server_hosts() == frozenset({host}):
         return GLOBAL_TOKEN_NAME
     return host_token_name(host)
+
+
+def token_secret_names() -> frozenset[str]:
+    """Every vault name a token error can tell the reader about, from config alone.
+
+    One per listed host, by the rule :func:`_token_secret_name` names them. A
+    value on a provider error ships to the client as ``secretName`` only when it
+    is one of these: its shape cannot prove it is a name and not an opaque token
+    the provider repeated in its own text, but a name derived from the operator's
+    allowlist carries nothing a provider supplied.
+    """
+    return frozenset(_token_secret_name(host) for host in hosts._allowed_bitbucket_server_hosts())
 
 
 def _setup_guidance(host: str) -> str:

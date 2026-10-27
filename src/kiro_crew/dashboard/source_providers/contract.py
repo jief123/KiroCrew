@@ -34,13 +34,21 @@ BITBUCKET_SERVER_PROVIDER = "bitbucket_server"
 GERRIT_PROVIDER = "gerrit"
 
 
-#: The shape a vault secret name may take when it rides on an error as its own
-#: field: an upper-case identifier, the form every built-in provider names its
-#: token with (``BITBUCKET_SERVER_TOKEN_<HEX>``). The bound fits that name for
-#: the longest listable host, a 253-character hostname with a port: 23 + 2 x 259
-#: characters. Anything else is dropped, so the client can show the field as
-#: copyable text as-is.
-SECRET_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,639}")
+#: The vault name of the Bitbucket Server token while one host is listed. The
+#: per-host name appends ``_<HEX>``, the host's upper-case hex encoding (see
+#: ``bitbucket_server.host_token_name``).
+BITBUCKET_SERVER_TOKEN_NAME = "BITBUCKET_SERVER_TOKEN"
+
+#: The only shapes a vault secret name may take when it rides on an error as its
+#: own field: the two Bitbucket Server token names, ``BITBUCKET_SERVER_TOKEN``
+#: and ``BITBUCKET_SERVER_TOKEN_<HEX>`` with ``<HEX>`` whole upper-case hex bytes.
+#: Any upper-case identifier would also admit an opaque token a provider repeated
+#: in its own text. The bound fits the per-host name for the longest listable
+#: host, a 253-character hostname with a port: 259 hex bytes. Anything else is
+#: dropped. The shape is necessary, not sufficient: the source API ships the name
+#: only when it is one Bitbucket Server code derives from the allowlist
+#: (``bitbucket_server.token_secret_names``).
+SECRET_NAME_RE = re.compile(BITBUCKET_SERVER_TOKEN_NAME + r"(?:_(?:[0-9A-F]{2}){1,259})?")
 
 
 def safe_secret_name(value: object) -> str:

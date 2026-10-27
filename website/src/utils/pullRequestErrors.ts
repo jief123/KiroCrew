@@ -10,9 +10,11 @@
  * happened to be fixed first.
  */
 
-/** A vault secret name as the gateway ships it: an upper-case identifier, up to
- *  the length a per-host name reaches for the longest listable host. */
-const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{0,639}$/
+/** A vault secret name as the gateway ships it: one of the two Bitbucket Server
+ *  token names, `BITBUCKET_SERVER_TOKEN` or `BITBUCKET_SERVER_TOKEN_<HEX>` (whole
+ *  upper-case hex bytes, up to the length a per-host name reaches for the longest
+ *  listable host). Any other upper-case word could be an opaque token. */
+const SECRET_NAME_RE = /^BITBUCKET_SERVER_TOKEN(?:_(?:[0-9A-F]{2}){1,259})?$/
 
 export function pullRequestErrorDetails(error: unknown): {
   message: string
@@ -51,8 +53,8 @@ export function pullRequestErrorDetails(error: unknown): {
     ) {
       hostScoped = payload.loginCommand
     }
-    // The gateway admits only an upper-case identifier here; the same shape is
-    // checked again so nothing else is ever offered as a name to copy.
+    // The gateway admits only a Bitbucket Server token name here; the same shape
+    // is checked again so nothing else is ever offered as a name to copy.
     if (typeof payload.secretName === 'string' && SECRET_NAME_RE.test(payload.secretName)) {
       secretName = payload.secretName
     }
