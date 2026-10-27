@@ -1787,6 +1787,90 @@ jobs:
   # MEASURED afterwards under this job's own environment -- real sandbox, no gh token, no
   # user session bus -- all eleven: 694 passed, 1 skipped, 38s.
   #
+  # ── New-test stability gate ──────────────────────────────────────────────
+  # The leaf-test path (LEAF_REPEAT loop) already repeats changed test files
+  # on leaf PRs (test-only, modify-only diffs).  This job closes the gap for
+  # non-leaf PRs -- where source changes land alongside new or modified test
+  # files -- by running those test files LEAF_REPEAT times on both hosted
+  # platforms.  GitHub-hosted runners only: the CodeBuild fleet is saturated
+  # by the eight-shard backend-test matrix.
+  new-test-stability:
+    name: New-test stability (${{ matrix.os }})
+    needs: [changes, await-fast-gate, lint-gate]
+    if: >-
+      ${{ github.event_name == 'pull_request'
+      && !cancelled()
+      && needs.lint-gate.result == 'success'
+      && needs.changes.outputs.leaf_tests != 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      KIROCREW_TMP_RESIDUE_STRICT: "1"
+      # One knob shared with the leaf-test path in backend-test.
+      LEAF_REPEAT: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Select test files to repeat
+        id: scope
+        env:
+          STABILITY_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          TARGETS_FILE: ${{ runner.temp }}/stability-targets.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/new_test_stability_scope.py > "$TARGETS_FILE"
+          if [ ! -s "$TARGETS_FILE" ]; then
+            echo "No added or modified test files; nothing to repeat."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Test files to repeat ($(wc -l < "$TARGETS_FILE" | tr -d ' ') file(s), $LEAF_REPEAT passes):"
+            sed 's/^/  /' "$TARGETS_FILE"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run test files ${{ env.LEAF_REPEAT }}x (stability check)
+        if: steps.scope.outputs.skip != 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          TARGETS_FILE: ${{ runner.temp }}/stability-targets.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::remove-matcher owner=python::"
+          TARGETS=()
+          while IFS= read -r line; do
+            line="${line%$'\r'}"; if [ -n "$line" ]; then TARGETS+=("$line"); fi
+          done < "$TARGETS_FILE"
+          for pass in $(seq 1 "$LEAF_REPEAT"); do
+            echo "::group::stability pass $pass/$LEAF_REPEAT"
+            pytest -q -n auto --timeout=120 --no-cov -m "not ipv6_required" \
+              --max-worker-restart=0 \
+              "${TARGETS[@]}"
+            echo "::endgroup::"
+          done
+
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
     needs: [await-fast-gate, lint-gate]
