@@ -130,6 +130,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_model_selection",
     ),
+    "_match_mcp_sign_in_ask": ("function", False, "b60c5fea256e", "session_handle_mcp"),
     "_no_tool_in_flight": ("function", False, "a6632a57e602", "session_handle_updates"),
     "_normalize_models": ("staticmethod", False, "0587318c8e24", "session_handle_model_selection"),
     "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
@@ -291,6 +292,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "session_handle_mcp"),
     "wait_mcp_ready": ("function", True, "dc863b4461ff", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),
+    "want_mcp_sign_in_named": ("function", False, "ce7410240196", "session_handle_mcp"),
 }
 
 #: Class-level annotations the split adds: fields first set by a member an owner defines,

@@ -876,6 +876,12 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
+        if not is_slash and not turn._turn_actor and not turn._is_synthetic:
+            # What the person typed, before `@prompt`/`$skill` expansion and
+            # any prepend this runner authors (cancelled-turn preamble,
+            # sub-agent failure, app context), on a turn the person wrote:
+            # naming an MCP server that still needs a sign-in offers its card.
+            client.note_user_message(turn.user_typed_message)
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (

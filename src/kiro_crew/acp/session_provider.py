@@ -119,6 +119,9 @@ class AcpSessionProvider(LLMProvider):
     ) -> None:
         self._handle = handle
         self._runtime = runtime
+        # The user's message held for the next turn's MCP sign-in ask; see
+        # ``note_user_message``.
+        self._pending_sign_in_ask = ""
         # When True, shutdown() kills the runtime (parent session owns it).
         # When False, shutdown() only destroys the session handle (subagent).
         self._owns_runtime = owns_runtime
@@ -651,6 +654,10 @@ class AcpSessionProvider(LLMProvider):
             # Outside the turn's own try below, so its claim is released here.
             await self._end_shared_turn(claim)
             raise
+        # The user's MCP sign-in ask, applied to the handle this turn runs on:
+        # a re-injection above may have replaced the one ``note_user_message``
+        # saw, and the new one is what knows a newly added server.
+        self._apply_sign_in_ask()
         send = self._handle.prompt
         if not allow_image:
             send = functools.partial(send, allow_image=False)
@@ -1486,6 +1493,27 @@ class AcpSessionProvider(LLMProvider):
     def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
         """Drain OAuth requests captured while the shared session initialized."""
         return self._handle.pop_pending_oauth_requests()
+
+    def note_user_message(self, text: str) -> None:
+        """Hold the user's own message for the next turn's MCP sign-in ask.
+
+        Applied by ``stream()`` once any pending MCP re-injection has replaced
+        the handle, so it reaches the handle that turn runs on. A server that
+        still needs a sign-in is offered at that turn's start only when this
+        text names it (``want_mcp_sign_in_named``). Never raises.
+        """
+        self._pending_sign_in_ask = text
+
+    def _apply_sign_in_ask(self) -> None:
+        """Hand the held sign-in ask to the current handle, once; never raises."""
+        text = getattr(self, "_pending_sign_in_ask", "")
+        self._pending_sign_in_ask = ""
+        if not text:
+            return
+        try:
+            self._handle.want_mcp_sign_in_named(text)
+        except Exception:
+            logger.debug("note_user_message: sign-in ask not recorded", exc_info=True)
 
     def mcp_session_report(self) -> McpSessionReport:
         """This session's MCP registration report."""
