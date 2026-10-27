@@ -144,7 +144,7 @@ def _rm_wipe_targets(command: str) -> "set[str]":
             if ENV_ASSIGNMENT_RE.match(words[0]):
                 words = words[1:]
                 continue
-            is_redirection, consumes_next = _shell._push_token_redirection(words[0])
+            is_redirection, consumes_next = _shell._push_token_redirection(words[0], chained=False)
             if is_redirection:
                 # a leading redirection runs before the command; drop its word, and
                 # its separate target word too when the operator did not glue one on
