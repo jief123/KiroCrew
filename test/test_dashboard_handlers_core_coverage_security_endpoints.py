@@ -45,14 +45,17 @@ class TestSelEndpoints:
 
     @pytest.mark.asyncio
     async def test_events_caps_limit_at_1000(self, fake_sel) -> None:
-        fake_sel.recent.return_value = []
-        await core_mod.api_sel_events(self._owner_req(query={"limit": "99999"}))
+        # A log holding more rows than any cap, so the served count shows the cap.
+        fake_sel.recent.side_effect = lambda **kw: [{"event": "e"}] * kw["limit"]
+        resp = await core_mod.api_sel_events(self._owner_req(query={"limit": "99999"}))
+        assert json.loads(resp.body)["count"] == 1000
         assert fake_sel.recent.call_args.kwargs["limit"] == 1000
 
     @pytest.mark.asyncio
     async def test_events_falls_back_on_unparsable_limit(self, fake_sel) -> None:
-        fake_sel.recent.return_value = []
-        await core_mod.api_sel_events(self._owner_req(query={"limit": "many"}))
+        fake_sel.recent.side_effect = lambda **kw: [{"event": "e"}] * kw["limit"]
+        resp = await core_mod.api_sel_events(self._owner_req(query={"limit": "many"}))
+        assert json.loads(resp.body)["count"] == 100
         assert fake_sel.recent.call_args.kwargs["limit"] == 100
 
     @pytest.mark.asyncio

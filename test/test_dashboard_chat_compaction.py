@@ -156,8 +156,9 @@ class TestBroadcastCompactionResultBackoff:
 
         state, slot = self._make_slot_and_state(tmp_path, monkeypatch)
 
-        _broadcast_compaction_result(state, slot, self._failed_event())
+        msg = _broadcast_compaction_result(state, slot, self._failed_event())
 
+        assert msg is not None and msg.startswith("❌"), msg
         assert not [
             c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "context_usage"
         ]

@@ -1295,8 +1295,9 @@ class TestSttConfigCustomModelBoundary:
         """No pair, no decision. This endpoint is fetched by the chat composer's voice
         hook on mount, not only by the settings page, so auditing a branch that
         discloses two empty strings would bury the rows that carry a value."""
-        await core_mod.api_stt_config(self._get())
+        body = json.loads((await core_mod.api_stt_config(self._get())).body)
 
+        assert (body["custom_model_path"], body["custom_model_sha256"]) == ("", "")
         assert [
             call.kwargs
             for call in fake_sel.log_api_access.call_args_list

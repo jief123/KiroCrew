@@ -405,10 +405,8 @@ test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_no_legacy.py
 test/test_dashboard_route_table.py
-test/test_dashboard_server_coverage.py
 test/test_dashboard_sessions_memory.py
 test/test_dashboard_sessions_search.py
-test/test_dashboard_start_site.py
 test/test_dashboard_themes_coverage.py
 test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py

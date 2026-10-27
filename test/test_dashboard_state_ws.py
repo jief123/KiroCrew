@@ -309,7 +309,8 @@ class TestOwnerScopedBroadcast:
         owner, other = self._ws(), self._ws()
         state.register_ws(owner, owner=True)
         state.register_ws(other)
-        await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        delivered = await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        assert delivered == 1
         assert owner.send_str.await_count or owner.send_str.call_count
         assert not (other.send_str.await_count or other.send_str.call_count)
 
