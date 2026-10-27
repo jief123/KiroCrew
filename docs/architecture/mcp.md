@@ -1036,7 +1036,7 @@ without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
-recorded approval needs one in **Developer → MCP Management** before it pools. Cached recommendation
+recorded approval needs one tap in **Developer → MCP Management** before it pools. Cached recommendation
 seeding may add a stub route, but it grants no launch approval; the seeded
 row stays on the session-sandboxed path until the operator approves it.
 
@@ -1069,7 +1069,20 @@ command/effective-environment pair for the row. The handler compares it
 with both the stored refusal and a fresh resolution before any write; a changed
 launch returns 409 and preserves both stores. A matching launch replaces the
 fingerprint and clears the refusal. A changed command, arguments, or declared
-environment requires the same re-approve flow. The gateway-owned `mcp/resolved/`
+environment requires the same re-approve flow.
+
+On the page, each row's control is one labelled switch, **Enable MCP
+sharing**. Turning it on is the one click above: it reads the launch, then
+sends the stub write carrying that `expected_launch`. It never turns page-wide
+sharing on; the **MCP sharing** switch asks first before it does. Turning a
+row's switch off turns a share off. A row refused as `changed_needs_reapproval`
+reads **Paused · command changed**, keeps its switch on, and offers **Approve
+update**, which pins the refused launch the same way. A row refused as
+`added_outside_dashboard` reads **Paused · not approved yet** and offers
+**Approve**. **Enable all shareable** lists the candidates by name and shares
+on one more press. No control shows command text.
+
+The gateway-owned `mcp/resolved/`
 store is sealed read-only in
 session sandboxes because its record chooses the entry point substituted for an
 approved npm launcher. Resolve-once therefore gives sandboxed npm a private
