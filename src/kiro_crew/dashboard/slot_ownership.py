@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
+from kiro_crew.dashboard.mcp_grant_binding import bind_routed_slot
 from kiro_crew.dashboard.state import SlotOrigin, load_window_off_loop
 from kiro_crew.sel import sel
 
@@ -612,5 +613,8 @@ async def slot_ownership_middleware(request: web.Request, handler: Handler) -> w
     denied = await slot_route_denial(request)
     if denied is not None:
         return denied
+    # Any admitted write to a slot can start a turn or respawn its engine: bind
+    # the caller as the user its persisted MCP sign-ins belong to, or conflict it.
+    bind_routed_slot(request, request.get(CHECKPOINT_SLOT_KEY))
     await load_routed_slot_window(request)
     return await handler(request)

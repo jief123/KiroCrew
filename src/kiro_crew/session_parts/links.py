@@ -15,6 +15,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
 
+from kiro_crew import mcp_grant_principals
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, canonical_key
 from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG
 from kiro_crew.session_parts.policy import _MAX_ORIGIN_LINKS, _opt_out_key
@@ -28,7 +29,13 @@ if TYPE_CHECKING:
 
 
 def set_slack_link(self: SessionManager, key: str, thread_ts: str, channel_id: str | None) -> None:
-    """Link a session to a Slack thread. Persists to session map."""
+    """Link a session to a Slack thread. Persists to session map.
+
+    Replies in the thread drive this session from people no dashboard request
+    speaks for, so it never persists an MCP sign-in again in this process.
+    """
+    if thread_ts:
+        mcp_grant_principals.conflict(key)
     self._session_map.set_slack_link(key, thread_ts, channel_id)
 
 
@@ -87,8 +94,12 @@ def set_mirror_link(
     ``accepts_inbound`` upgrades a non-Slack outbound mirror into a
     persisted session-resume binding. Slack owns its dedicated reverse
     index; other channels use :meth:`find_mirror_sessions`. ``reason`` is
-    recorded when this call ends an existing inbound binding.
+    recorded when this call ends an existing inbound binding. A two-way binding
+    lets channel users drive the session, so it never persists an MCP sign-in
+    again in this process.
     """
+    if link is not None and accepts_inbound:
+        mcp_grant_principals.conflict(key)
     self._session_map.set_mirror_link(
         key,
         link,
