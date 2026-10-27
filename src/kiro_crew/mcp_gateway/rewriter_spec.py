@@ -93,6 +93,17 @@ _WINDOWS_CMD_LINE_LIMIT = 8191
 UNPOOLABLE_SERVERS: frozenset[str] = frozenset({"creds-agent", "local-creds-agent-mcp"})
 
 
+def is_unpoolable(name: str) -> bool:
+    """Whether *name*, or the alias it is injected under, is never pooled.
+
+    The one denylist test every path that hands a session a stub, or lets
+    ``gatewayd`` spawn a shared backend, asks. The rewriter applies it while it
+    writes an overlay; the readers apply it again so an overlay, sidecar or
+    approval written before a name was listed cannot still pool it.
+    """
+    return name in UNPOOLABLE_SERVERS or mcp_server_alias(name) in UNPOOLABLE_SERVERS
+
+
 def _build_stub_entry(
     *,
     stubs_dir: Path,
