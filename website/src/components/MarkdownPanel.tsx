@@ -1176,12 +1176,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title={i18nT('components.markdownPanel.toggle_line_numbers')} aria-label={i18nT('components.markdownPanel.toggle_line_numbers')}><Hash size={14} /></button>
     )}
-    {/* Full screen carries no source toggle for a rich file: this header row
-        is already past two controls and must not grow. Edit/Preview stays in
-        the side panel; a rich file in source mode gets its editor options from
-        the ⋯ menu and its Save/Cancel from the unsaved-changes row below. */}
-    {canPreview && !isRichType && !readOnly && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
+    {/* The full-screen header row is capped and must not grow, so a rich
+        file's Edit/Preview takes the artifact button's slot (the artifact
+        action stays in ⋯). Its editor options live in ⋯ and its Save/Cancel
+        on the unsaved-changes row below. */}
+    {canPreview && !readOnly && (
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }} aria-pressed={richHasSource ? editing : undefined}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
     )}
     {readOnly && (
       <span className="px-2 py-1 text-[12px] font-medium text-muted select-none" aria-label={i18nT('components.markdownPanel.read_only')}>{i18nT('components.markdownPanel.read_only')}</span>
@@ -1425,7 +1425,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           </div>
           <div className="flex items-center gap-1.5">
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
+            {!showBinaryCard && !richHasSource && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(ext)
