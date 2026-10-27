@@ -17,6 +17,9 @@ from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIX
 #: this module needs no import from the governance engine.  Pinned equal by
 #: ``test_governance_distribution``.
 _POLICY_CACHE_LEAF = "policy_cache"
+#: The enterprise ceiling handoff, mirroring ``policy_distribution_cache.HANDOFF_DIR_LEAF``.
+#: Pinned equal by ``test_policy_handoff``.
+_POLICY_HANDOFF_LEAF = "policy_handoff"
 #: Gateway-only runtime subtree that holds authenticated macOS decoder images.
 #: The gateway opens these outside the agent sandbox; every sandbox mode must
 #: hide the whole subtree while the image is still writable and through spawn.
@@ -458,6 +461,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "admission_policy.json",
     "profiles",
     "app_admission.json",
+    # The ceiling an enterprise gateway hands its sandboxed children
+    # (``policy_distribution_cache.publish_handoff``). A sandboxed Kiro Crew MCP server reads
+    # it at boot because it can reach neither the policy cache nor the sign-in, both hidden
+    # above; a writable copy would let the agent choose that server's ceiling. Only the
+    # gateway and the operator's CLI write it, outside the sandbox.
+    _POLICY_HANDOFF_LEAF,
     # Opt-out and consent ceilings the config loader reads in-sandbox. A writable
     # ``denied_commands.json`` lets an auto-approved agent set ``disable_all`` and
     # defeat the deny gate after a restart; a writable ``computer_use.json`` lets it
@@ -885,6 +894,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # so a session refuses rather than proceeding ungoverned. That is the same direction
     # the rest of this list takes, which is why they sit together.
     "security_policy.json",
+    _POLICY_HANDOFF_LEAF,
     "profiles",
     "denied_commands.json",
     "registry_trust.json",

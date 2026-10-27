@@ -149,6 +149,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # Without this entry the seal skips the directory until the first seed, and the
     # name is one an agent could create to forge the record.
     "seed-provenance",
+    # The enterprise ceiling handoff. (1) Its reader
+    # (``policy_distribution_cache.read_handoff``) reads a missing file as no handoff,
+    # exactly as an absent directory, and refuses to boot either way. (2) The bind is
+    # live, so the file the gateway writes later is seen. Without this entry a sandbox
+    # started before the first write could create the directory and plant a ceiling.
+    "policy_handoff",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -170,6 +176,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "mcp/resolved",
     "skill-projection",
     "seed-provenance",
+    "policy_handoff",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 #: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
@@ -257,6 +264,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed settings-seed record",
         "the agent could forge the record that lets Kiro Crew overwrite and delete a "
         "settings.local.json the user wrote",
+    ),
+    "policy_handoff": (
+        "sealed ceiling handoff",
+        "the agent could choose the ceiling a sandboxed Kiro Crew MCP server enforces",
     ),
     "app-agent-launch": (
         "sealed app-agent launch directory",

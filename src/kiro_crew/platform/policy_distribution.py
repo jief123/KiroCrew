@@ -157,8 +157,12 @@ from kiro_crew.platform.policy_distribution_cache import (
     _source_digest,
     _write_cache_file,
     cache_dir,
+    publish_handoff,
     read_cache,
     read_cache_meta,
+    read_handoff,
+    restore_handoff,
+    takes_handoff,
     touch_cache,
     write_cache,
 )
@@ -314,6 +318,12 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
     """
     from kiro_crew.platform.governance import active_policy_distribution
 
+    if takes_handoff():
+        # A sandboxed enterprise process inherits the gateway's ceiling and never fetches.
+        return RefreshOutcome(
+            REFRESH_REJECTED,
+            "a sandboxed process takes its ceiling from the gateway and does not fetch one",
+        )
     try:
         dist = resolve_distribution(active_policy_distribution())
     except PlatformCompositionError as exc:
@@ -467,6 +477,7 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
     # a different source is not a rollback target at all (re-caching a retired endpoint's
     # document under the new endpoint's name is what the repoint rule exists to refuse).
     previous = pre_fetch
+    handed_off = False
 
     # A candidate that MOVES the source is refused rather than installed. Nothing else
     # would notice: the refresher re-reads the installed ceiling each cycle, so it would
@@ -561,12 +572,19 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
                 "cache-only child would inherit the previous one; keeping the running "
                 f"ceiling. Check that the gateway can write {cache_dir()}."
             )
+        # The sandboxed children's handoff, on the same publish-before-install rule as the
+        # cache above, and undone with it below if the install refuses.
+        previous_handoff, _ = read_handoff()
+        publish_handoff(body)
+        handed_off = True
         apply_ceiling(ceiling)
     except Exception as exc:
         # Only if the cache still holds what THIS refresh published: another process may
         # have published a newer document between the publish above and this failure, and
         # rolling back over it would destroy a valid ceiling nobody asked us to touch.
         _restore_cache(previous, published_pair=(_body_digest(body), _source_digest(dist.source)))
+        if handed_off:
+            restore_handoff(previous_handoff, published=body)
         # The document is well-formed but this host cannot run under it — a bound
         # profile is looser than the new ceiling, or a mandated signature is
         # missing. Keeping the running ceiling is the whole reason a live refresh
@@ -1128,6 +1146,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _load_by_fetch,
         _load_cache_only,
         _load_from_cached_winner,
+        _load_handoff,
         _LoadOutcome,
         _redact_source,
         _request_header_secrets,
@@ -1142,15 +1161,27 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AZURE_SAS_QUERY_NAMES,
         _CACHE_LOCK_LEAF,
         _FETCH_SLOT_LOCK,
+        _HANDOFF_FILE_LEAF,
+        _HANDOFF_VERSION,
         _INSTALLED_LOCK,
+        _MAX_HANDOFF_BYTES,
         _PRESIGN_QUERY_PREFIXES,
         CACHE_DIR_LEAF,
+        HANDOFF_DIR_LEAF,
         CachedMeta,
         _cache_dir_ready,
+        _cache_moved_past,
         _claim_fetch_slot,
+        _handoff_digest,
+        _handoff_lock,
+        _handoff_payload,
         _identity_query,
         _installed_body_digest,
         _last_fetch_attempt,
+        _parse_handoff,
+        _withdraw_handoff,
+        handoff_dir,
+        hands_off,
         reset_fetch_window,
         reset_process_state,
     )

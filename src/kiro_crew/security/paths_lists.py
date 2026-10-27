@@ -432,6 +432,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # leaving it open would hand over the exact deny patterns an evasion needs.
     # policy_distribution_cache.py opens both files directly, not through this gate.
     "policy_cache",
+    # The enterprise ceiling handoff to sandboxed children: the same document, so the
+    # same read and write floor. The OS seal keeps it readable for the in-sandbox reader
+    # (``sandbox._CREW_READONLY_LEAVES``); this entry refuses the agent's file tools.
+    "policy_handoff",
     "admission_policy.json",
     "denied_commands.json",
     # Operator grants of ``owner`` trust to hand-configured app registries, on the same floor

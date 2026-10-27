@@ -30,7 +30,13 @@ from typing import Callable, Iterator, Optional, Tuple
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform.policy_distribution_source import _body_digest, _split_url
+from kiro_crew.platform.governance import MAX_POLICY_BYTES
+from kiro_crew.platform.policy_distribution_source import (
+    _body_digest,
+    _is_enterprise,
+    _split_url,
+    cache_only,
+)
 from kiro_crew.platform_compat import file_lock, is_link_or_junction, make_owner_only_dir
 
 logger = logging.getLogger("kiro_crew.platform.policy_distribution")
@@ -59,6 +65,16 @@ _cache_dir_ready: Optional[Path] = None
 #: effect rather than against a cache another process may have moved ahead.
 _installed_body_digest: str = ""
 _INSTALLED_LOCK = threading.Lock()
+
+# ── The ceiling handoff to sandboxed children (enterprise build only) ──
+#: Mirrored as ``sandbox_leaves._POLICY_HANDOFF_LEAF``; ``test_policy_handoff`` pins them.
+HANDOFF_DIR_LEAF = "policy_handoff"
+_HANDOFF_FILE_LEAF = "ceiling.json"
+_HANDOFF_VERSION = 1
+#: The body plus a small JSON wrapper; anything larger is not a handoff this module wrote.
+_MAX_HANDOFF_BYTES = 2 * MAX_POLICY_BYTES + 4096
+#: Digest of the document this process last made the handoff hold, or ``""``.
+_handoff_digest: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -618,10 +634,11 @@ def reset_process_state() -> None:
     * a post-install hook registered by one test would run on every later test's refresh,
       reaching into whatever subsystem it was written for.
     """
-    global _cache_dir_ready, _installed_body_digest
+    global _cache_dir_ready, _installed_body_digest, _handoff_digest
     reset_fetch_window()
     with _INSTALLED_LOCK:
         _installed_body_digest = ""
+        _handoff_digest = ""
     _cache_dir_ready = None
     _POST_INSTALL_HOOKS.clear()
 
@@ -674,9 +691,233 @@ def _installed_digest() -> str:
 
 
 def _record_installed(body: bytes) -> None:
+    """Record *body* as the ceiling this process now runs under, and hand it off.
+
+    The handoff is published here because every install path ends here once its ceiling
+    is the one that will govern. It raises ``PlatformCompositionError`` when the handoff
+    cannot be made to agree (see :func:`publish_handoff`), which at boot is a refusal.
+    """
     global _installed_body_digest
     with _INSTALLED_LOCK:
         _installed_body_digest = _body_digest(body)
+    publish_handoff(body)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The ceiling handoff
+# ──────────────────────────────────────────────────────────────────────────
+#
+# In an enterprise build every process enters the central tier, but a process inside the
+# agent sandbox can reach neither the policy cache nor the Kiro sign-in: both are hidden
+# from the agent, and the Kiro Crew MCP servers kiro-cli starts share the agent's view.
+# So the gateway hands its installed ceiling over: the document's bytes, written to a leaf
+# the sandbox seals read-only (``sandbox_leaves._CREW_READONLY_LEAVES``) and pre-creates
+# empty, so nothing inside a sandbox can write or create it. A sandboxed child reads it
+# and never fetches (``policy_distribution_boot._load_handoff``). The file carries only
+# the document: no source, no sign-in, no credential.
+#
+# Readable inside the sandbox, as ``security_policy.json`` is: a child that enforces a
+# ceiling must read it, and the agent's own file tools are still refused it
+# (``security.paths_lists``).
+
+
+def handoff_dir() -> Path:
+    """The handoff directory, resolved lazily for the reason :func:`cache_dir` gives."""
+    return config_dir() / HANDOFF_DIR_LEAF
+
+
+def hands_off() -> bool:
+    """Does this process publish the handoff? An unsandboxed enterprise process does."""
+    from kiro_crew import sandbox_launch_mark
+
+    return _is_enterprise() and not cache_only() and not sandbox_launch_mark.launched_in_sandbox()
+
+
+def takes_handoff() -> bool:
+    """Must this process take its ceiling from the handoff and never fetch?
+
+    An enterprise process the sandbox launcher started. A cache-only child (an app
+    backend) keeps its own mode, which the gateway chose for it.
+    """
+    from kiro_crew import sandbox_launch_mark
+
+    return _is_enterprise() and not cache_only() and sandbox_launch_mark.launched_in_sandbox()
+
+
+def read_handoff() -> Tuple[Optional[bytes], str]:
+    """The handed-off document, or ``(None, why)``. Never raises.
+
+    Refuses a link, a non-regular file, an oversize file, a wrapper of another version,
+    and a document whose bytes do not match the digest written with them.
+    """
+    path = handoff_dir() / _HANDOFF_FILE_LEAF
+    try:
+        if is_link_or_junction(path):
+            return None, "the handoff is a link"
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode):
+            return None, "the handoff is not a regular file"
+        if st.st_size > _MAX_HANDOFF_BYTES:
+            return None, "the handoff is too large"
+        raw = read_bytes_with_retry(path)
+    except FileNotFoundError:
+        return None, "the gateway has not handed a ceiling over"
+    except OSError as exc:
+        return None, f"the handoff could not be read ({type(exc).__name__})"
+    body, why = _parse_handoff(raw)
+    return body, why
+
+
+def _parse_handoff(raw: bytes) -> Tuple[Optional[bytes], str]:
+    try:
+        wrapper = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None, "the handoff is not valid JSON"
+    if not isinstance(wrapper, dict) or wrapper.get("version") != _HANDOFF_VERSION:
+        return None, "the handoff has an unknown format"
+    policy, digest = wrapper.get("policy"), wrapper.get("sha256")
+    if not isinstance(policy, str) or not isinstance(digest, str):
+        return None, "the handoff has an unknown format"
+    body = policy.encode("utf-8")
+    if _body_digest(body) != digest:
+        return None, "the handoff document does not match its digest"
+    return body, ""
+
+
+def _handoff_payload(body: bytes) -> bytes:
+    return json.dumps(
+        {
+            "version": _HANDOFF_VERSION,
+            "sha256": _body_digest(body),
+            "policy": body.decode("utf-8"),
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def publish_handoff(body: bytes) -> None:
+    """Make the handoff hold *body*, the ceiling this process just installed.
+
+    No-op unless :func:`hands_off`, and once per document per process. Skipped when the
+    cache holds a DIFFERENT document: another process has published a newer ceiling and
+    hands that one off after its own install, so writing this one would roll the
+    handoff back. Checked and written under the cache's write lock for that reason.
+
+    Raises ``PlatformCompositionError`` when the write fails AND a different document
+    stays in place, because sandboxed children would then run under a ceiling this host
+    has replaced. A failed write that leaves no handoff is only logged: children
+    then find none and refuse to start, which is the safe direction.
+    """
+    global _handoff_digest
+    if not hands_off():
+        return
+    digest = _body_digest(body)
+    with _INSTALLED_LOCK:
+        if _handoff_digest == digest:
+            return
+    with _handoff_lock():
+        if _cache_moved_past(digest):
+            logger.info("the policy cache moved past this ceiling; leaving the handoff alone")
+            return
+        try:
+            current, _ = read_handoff()
+            if current is None or _body_digest(current) != digest:
+                make_owner_only_dir(handoff_dir())
+                _write_cache_file(handoff_dir() / _HANDOFF_FILE_LEAF, _handoff_payload(body))
+        except Exception:
+            logger.warning(
+                "could not hand the installed ceiling to sandboxed children", exc_info=True
+            )
+            _withdraw_handoff(keep_digest=digest)
+            return
+    with _INSTALLED_LOCK:
+        _handoff_digest = digest
+
+
+def restore_handoff(previous: Optional[bytes], *, published: bytes) -> None:
+    """Undo :func:`publish_handoff` of *published* after the install it preceded failed.
+
+    Puts *previous* back, or removes the handoff when there was none. Under the same
+    lock as the publish, and only while the handoff still holds *published* and the
+    cache has not moved to a third document: a process that published that one hands
+    it off itself, and a rollback here would regress it. Never raises: a refused
+    refresh keeps running.
+    """
+    global _handoff_digest
+    if not hands_off():
+        return
+    with _INSTALLED_LOCK:
+        _handoff_digest = ""  # whatever happens below, the next install re-checks the file
+    keep = _body_digest(previous) if previous is not None else ""
+    try:
+        with _handoff_lock():
+            current, _ = read_handoff()
+            if current != published:
+                return
+            # A third document only: a cache still holding the refused one (its own
+            # rollback failed) must not keep that one handed off.
+            meta = read_cache_meta()
+            if meta is not None and meta.digest not in ("", keep, _body_digest(published)):
+                return
+            try:
+                if previous is None:
+                    (handoff_dir() / _HANDOFF_FILE_LEAF).unlink(missing_ok=True)
+                else:
+                    _write_cache_file(
+                        handoff_dir() / _HANDOFF_FILE_LEAF, _handoff_payload(previous)
+                    )
+            except Exception:
+                logger.warning("could not restore the previous ceiling handoff", exc_info=True)
+                _withdraw_handoff(keep_digest=keep)
+    except Exception:
+        logger.error("sandboxed children may run under a ceiling this host refused", exc_info=True)
+
+
+@contextlib.contextmanager
+def _handoff_lock() -> Iterator[None]:
+    """The cache's write lock, which every handoff mutation is made under.
+
+    The same lock as the cache, so "the cache holds X" and "the handoff holds X" are
+    judged and changed as one step across processes. Without a cache directory there is
+    no lock to take, and nothing to race: no other process has published a ceiling.
+    """
+    directory = _ensure_cache_dir()
+    if directory is None:
+        yield
+        return
+    with _cache_write_lock(directory):
+        yield
+
+
+def _cache_moved_past(digest: str) -> bool:
+    """Does the cache hold a document other than the one with *digest*?"""
+    meta = read_cache_meta()
+    return meta is not None and bool(meta.digest) and meta.digest != digest
+
+
+def _withdraw_handoff(*, keep_digest: str) -> None:
+    """Remove a handoff that does not hold *keep_digest*, or raise if it survives.
+
+    Called with :func:`_handoff_lock` held.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    path = handoff_dir() / _HANDOFF_FILE_LEAF
+    current, _ = read_handoff()
+    if current is not None and _body_digest(current) == keep_digest:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    if os.path.lexists(path):
+        remaining, _ = read_handoff()
+        if remaining is None or _body_digest(remaining) != keep_digest:
+            raise PlatformCompositionError(
+                "the installed ceiling could not be handed to sandboxed children and the "
+                f"previous handoff could not be removed. Check that {handoff_dir()} is "
+                "writable by the gateway."
+            )
 
 
 #: Callables run after a refresh INSTALLS a new ceiling, so a control that was

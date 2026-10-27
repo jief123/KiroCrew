@@ -42,6 +42,8 @@ from kiro_crew.platform.policy_distribution_cache import (
     cache_dir,
     read_cache,
     read_cache_meta,
+    read_handoff,
+    takes_handoff,
     touch_cache,
     write_cache,
 )
@@ -156,6 +158,8 @@ def load_distributed_policy(
     dist = resolve_distribution(declared)
     if cache_only():
         return _load_cache_only(dist)
+    if takes_handoff():
+        return _load_handoff()
     if not dist.enabled:
         return None
 
@@ -285,6 +289,28 @@ def _load_cache_only(dist: PolicyDistribution) -> GovernanceCeiling:
             f"the cached ceiling is unusable in cache-only mode: {exc}"
         ) from exc
     _record_installed(cached.body)
+    return ceiling
+
+
+def _load_handoff() -> GovernanceCeiling:
+    """The ceiling the gateway handed over, for an enterprise process inside the sandbox.
+
+    No fetch, no cache and no sign-in: the sandbox hides all three, and a child must not
+    choose its own ceiling. **Fails closed.** An enterprise build has no ungoverned
+    answer, so an absent, damaged or unusable handoff refuses boot. The document is
+    still parsed and verified exactly as a fetched one is.
+    """
+    body, why = read_handoff()
+    if body is None:
+        raise PlatformCompositionError(
+            f"this sandboxed process takes its ceiling from the gateway, and {why}. "
+            "It refuses to run without the organisation's policy."
+        )
+    try:
+        ceiling = parse_distributed_policy(body, source="")
+    except PlatformCompositionError as exc:
+        raise PlatformCompositionError(f"the gateway's ceiling handoff is unusable: {exc}") from exc
+    _record_installed(body)
     return ceiling
 
 

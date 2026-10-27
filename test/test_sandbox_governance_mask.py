@@ -210,6 +210,9 @@ class TestKeystonesAreSealedInEveryMode:
         # here could swap the bytes in between. The file-edit gate refuses the edit;
         # only the kernel denial asserted here refuses the shell's.
         "models",
+        # The enterprise ceiling handoff a sandboxed MCP server boots from. Readable, or
+        # that server has no ceiling; writable, and the agent picks the ceiling.
+        "policy_handoff",
     )
 
     @_POSIX_ONLY

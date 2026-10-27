@@ -1487,6 +1487,20 @@ flagging that child would refuse to start an app on a host running perfectly wel
 skip the tier and drop it to a local ceiling — the failure cache-only mode exists to
 prevent.
 
+### The ceiling handoff to sandboxed children (enterprise build)
+
+An enterprise build always enters the central tier, and that includes a Kiro Crew MCP server kiro-cli starts inside the agent sandbox (`mcp_entry.slim_server` → `boot_platform`). That process can reach neither the policy cache nor the Kiro sign-in: both are hidden from the agent, and the MCP servers share the agent's view. So the gateway hands its installed ceiling over.
+
+| Side | What it does | Where |
+|---|---|---|
+| Gateway (any unsandboxed enterprise process) | Writes the document it installed to `<data home>/policy_handoff/ceiling.json`: `{"version", "sha256", "policy"}`, no source, no sign-in. Written on every install path (`_record_installed`), and before `apply_ceiling` on a live refresh, which puts the previous copy back if the install refuses. Skipped when the cache holds a different document, so an older process never rolls a newer handoff back. | `policy_distribution_cache.publish_handoff` |
+| Sandboxed child | Reads the handoff, checks the digest, and parses and verifies it like a fetched document. Never fetches, never reads the cache, never refreshes. An absent, damaged or unusable handoff refuses boot. | `policy_distribution_boot._load_handoff` |
+| Sandbox | `policy_handoff` is READONLY and pre-created empty, with no link allowed at the name, so nothing in a sandbox can write or create it. It is withheld from foreign-harness children, and the agent's file tools are refused it. `policy_cache`, `.vault` and `kas` stay hidden. | `sandbox_leaves`, `sandbox_precreate`, `security.paths_lists` |
+
+A process is a child when the sandbox launcher marked it (`KIROCREW_SANDBOX_ACTIVE`). `cli.main` and `mcp_entry` drop that marker at start, so they note it first (`sandbox_launch_mark`). The marker picks where the ceiling comes from, never whether one applies: a child that clears it tries to fetch, which the sandbox denies, and an unsandboxed process that sets it reads only a file it could write anyway. A cache-only app backend keeps cache-only mode. An oss build neither writes nor reads the handoff.
+
+The handoff is readable inside the sandbox, as `security_policy.json` is: a child that enforces a ceiling has to read it. A long-running child keeps the ceiling it booted with until its session restarts.
+
 ## Policy authenticity (`identity.signature`)
 
 Without a signature check, a policy's integrity rests entirely on **filesystem
