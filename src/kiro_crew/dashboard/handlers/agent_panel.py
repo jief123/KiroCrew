@@ -32,6 +32,7 @@ Two halves with deliberately different auth, because they are different acts:
 #   ``agent_panel_dashboard`` -- the dynamic dashboard's ``/api/agent-panel/dashboard/`` routes
 #   ``agent_panel_snapshot`` -- the picture of a crewmate's own page, ``.../dashboard/snapshot``
 #   ``agent_panel_record`` -- the record door a script cron appends through, ``.../dashboard/record``
+#   ``agent_panel_record_app`` -- the same door for an installed app, ``/api/member-records/{slug}``
 
 from __future__ import annotations
 
@@ -59,6 +60,7 @@ from kiro_crew.dashboard.handlers.agent_panel_publish import (
 )
 from kiro_crew.dashboard.handlers.agent_panel_read import api_member_panel
 from kiro_crew.dashboard.handlers.agent_panel_record import api_dashboard_record
+from kiro_crew.dashboard.handlers.agent_panel_record_app import api_member_record
 from kiro_crew.dashboard.handlers.agent_panel_snapshot import api_dashboard_snapshot
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,12 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # The drawer's read. NOT under /api/agent-panel: that prefix is
     # strict-internal (MCP-only), and this one is called by the browser.
     app.router.add_get("/api/members/{slug}/panel", api_member_panel)
+    # The installed app's record door. NOT under /api/agent-panel (strict-internal) and
+    # NOT under /api/members (every route there turns an app token away): its own
+    # prefix, so an app reaches it only through a ``permissions.api`` grant the owner
+    # approved, and its own gate then admits an app-token caller and nothing else
+    # (``agent_panel_record_app._resolve_app_writer``).
+    app.router.add_post("/api/member-records/{slug}", api_member_record)
 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -111,6 +119,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.agent_panel_dashboard",
     "kiro_crew.dashboard.handlers.agent_panel_snapshot",
     "kiro_crew.dashboard.handlers.agent_panel_record",
+    "kiro_crew.dashboard.handlers.agent_panel_record_app",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -209,6 +218,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import dashboard_types  # noqa: F401
     from kiro_crew import pipeline_board_contract  # noqa: F401
     from kiro_crew import members as members_mod  # noqa: F401
+    from kiro_crew.apps.manifest_names import app_name_error  # noqa: F401
     from kiro_crew.artifact_store import dashboard_package as _dashboard  # noqa: F401
     from kiro_crew.artifact_store.model import ArtifactValidationError  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
