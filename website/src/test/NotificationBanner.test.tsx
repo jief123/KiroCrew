@@ -662,6 +662,154 @@ describe('NotificationBanner: stack and interaction', () => {
   })
 })
 
+describe('NotificationBanner: swipe to dismiss (mobile)', () => {
+  const swipeEl = () => screen.getByTestId('notification-banner-swipe')
+  const touch = (x: number, y: number) => ({ pointerId: 7, pointerType: 'touch', clientX: x, clientY: y })
+  /** One finger: down at (x0, 100), through each `xs` step, then lifted at the last. */
+  const swipe = (steps: Array<[number, number]>) => {
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(...steps[0]))
+    for (const s of steps.slice(1)) fireEvent.pointerMove(el, touch(...s))
+    fireEvent.pointerUp(el, touch(...steps[steps.length - 1]))
+  }
+
+  it('a horizontal swipe past the threshold dismisses the card the way the X does: gone, still unread', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { store } = renderBanner({ items: [n] })
+    arrive(n)
+    expect(cards()).toHaveLength(1)
+    swipe([[200, 100], [230, 102], [300, 104]])
+    expect(cards()).toHaveLength(0)
+    // Same persistence as the close control: the note is not acked, it waits in the bell.
+    expect(mockAck).not.toHaveBeenCalled()
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+  })
+
+  it('a leftward swipe dismisses too', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    swipe([[300, 100], [270, 100], [180, 100]])
+    expect(cards()).toHaveLength(0)
+  })
+
+  it('a short swipe follows the finger and then snaps back, dismissing nothing', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(215, 100))
+    fireEvent.pointerMove(el, touch(240, 100))
+    expect(el.style.transform).toBe('translateX(40.0px)')
+    expect(el.getAttribute('data-swiping')).toBe('true')
+    fireEvent.pointerUp(el, touch(240, 100))
+    expect(cards()).toHaveLength(1)
+    expect(el.style.transform).toBe('')
+    expect(el.getAttribute('data-swiping')).toBeNull()
+  })
+
+  it('a vertical drag is left to the browser: the card never moves, even if the finger turns sideways later', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    expect(el.className).toContain('touch-pan-y')
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(202, 130))
+    fireEvent.pointerMove(el, touch(320, 160))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerUp(el, touch(320, 160))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('a diagonal drag that crosses the scroll slop before the horizontal lock is declined', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(209, 109))
+    fireEvent.pointerMove(el, touch(320, 110))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerUp(el, touch(320, 108))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('the click a snapped-back swipe releases does not open the note', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    swipe([[200, 100], [215, 100], [240, 100]])
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).not.toHaveBeenCalled()
+    // The NEXT tap is an ordinary tap again.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).toHaveBeenCalledWith(n.ts)
+  })
+
+  it('a touch that the browser cancels (it took the scroll) snaps back', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(215, 100))
+    fireEvent.pointerMove(el, touch(320, 100))
+    expect(el.style.transform).toBe('translateX(120.0px)')
+    fireEvent.pointerCancel(el, touch(320, 100))
+    expect(el.style.transform).toBe('')
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('keeps the visible close button beside the swipe on mobile', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    expect(screen.getByTestId('notification-banner-dismiss')).toBeTruthy()
+  })
+
+  it('does nothing on the desktop layout or for a mouse', () => {
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    swipe([[200, 100], [230, 100], [400, 100]])
+    expect(cards()).toHaveLength(1)
+    expect(swipeEl().className).not.toContain('touch-pan-y')
+    isMobileMock = true
+    const m = mkN()
+    renderBanner()
+    arrive(m)
+    const el = screen.getAllByTestId('notification-banner-swipe')[1]
+    const mouse = (x: number) => ({ pointerId: 1, pointerType: 'mouse', clientX: x, clientY: 100 })
+    fireEvent.pointerDown(el, mouse(200))
+    fireEvent.pointerMove(el, mouse(230))
+    fireEvent.pointerMove(el, mouse(400))
+    fireEvent.pointerUp(el, mouse(400))
+    expect(cards()).toHaveLength(2)
+  })
+
+  it('snaps back without a transition under reduced motion, with one otherwise', () => {
+    isMobileMock = true
+    reducedMotionMock = true
+    renderBanner()
+    arrive(mkN())
+    expect(swipeEl().className).not.toContain('transition-transform')
+    reducedMotionMock = false
+    renderBanner()
+    arrive(mkN())
+    expect(screen.getAllByTestId('notification-banner-swipe')[1].className).toContain('transition-transform')
+  })
+})
+
 describe('exit geometry', () => {
   const card = { left: 900, right: 1240, top: 60, bottom: 130, width: 340, height: 70 } as DOMRect
   const bell = { left: 1250, right: 1278, top: 8, bottom: 36, width: 28, height: 28 } as DOMRect
